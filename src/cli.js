@@ -64,7 +64,7 @@ function runCli(argv = process.argv.slice(2), output = process.stdout, errorOutp
     const address = server.address();
     const url = `http://${options.host}:${address.port}`;
     output.write(`Codex Session Viewer\n`);
-    if (address.port !== startPort) {
+    if (startPort !== 0 && address.port !== startPort) {
       output.write(`Port ${startPort} is busy; using available port ${address.port}.\n`);
     }
     output.write(`Serving at: ${url}\n`);

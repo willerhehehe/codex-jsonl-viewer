@@ -78,6 +78,24 @@ test("CLI strict port reports a busy port instead of falling back", async () => 
   }
 });
 
+test("CLI port zero uses an assigned port without a busy-port warning", async () => {
+  const output = bufferedOutput();
+  const errorOutput = bufferedOutput();
+  const viewer = cli.runCli(["--port", "0"], output, errorOutput);
+
+  try {
+    await waitForListening(viewer);
+
+    assert.match(output.text(), /Serving at: http:\/\/127\.0\.0\.1:\d+/);
+    assert.doesNotMatch(output.text(), /Port 0 is busy/);
+    assert.equal(errorOutput.text(), "");
+  } finally {
+    if (viewer.listening) {
+      await close(viewer);
+    }
+  }
+});
+
 test("dateToDir uses year month day segments", () => {
   assert.equal(
     server.dateToDir("/tmp/sessions", "2026-05-09"),
