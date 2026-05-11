@@ -25,6 +25,8 @@ The command prints the local URL to open:
 http://127.0.0.1:8765
 ```
 
+If port `8765` is already in use, the viewer automatically picks another available port and prints the actual URL.
+
 The default session root is:
 
 ```text
@@ -44,6 +46,7 @@ Other options:
 ```bash
 npx codex-jsonl-viewer --port 9000
 npx codex-jsonl-viewer --host 0.0.0.0
+npx codex-jsonl-viewer --strict-port
 npx codex-jsonl-viewer --open
 ```
 

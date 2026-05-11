@@ -8,12 +8,15 @@ function parseArgs(argv) {
     root: DEFAULT_ROOT,
     open: false,
     help: false,
+    strictPort: false,
   };
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--help" || arg === "-h") {
       options.help = true;
+    } else if (arg === "--strict-port") {
+      options.strictPort = true;
     } else if (arg === "--open") {
       options.open = true;
     } else if (arg === "--no-open") {
@@ -56,22 +59,34 @@ function runCli(argv = process.argv.slice(2), output = process.stdout, errorOutp
   }
 
   const server = createHttpServer(options);
-  server.listen(options.port, options.host, () => {
+  const startPort = options.port;
+  const onListening = () => {
     const address = server.address();
     const url = `http://${options.host}:${address.port}`;
     output.write(`Codex Session Viewer\n`);
+    if (address.port !== startPort) {
+      output.write(`Port ${startPort} is busy; using available port ${address.port}.\n`);
+    }
     output.write(`Serving at: ${url}\n`);
     output.write(`Session root: ${resolveSessionsRoot(options.root)}\n`);
     output.write(`Press Ctrl+C to stop.\n`);
     if (options.open) {
       openBrowser(url);
     }
-  });
-
-  server.on("error", (error) => {
+  };
+  const onError = (error) => {
+    if (error.code === "EADDRINUSE" && !options.strictPort && startPort !== 0) {
+      server.off("error", onError);
+      server.listen(0, options.host);
+      return;
+    }
     errorOutput.write(`Failed to start Codex Session Viewer: ${error.message}\n`);
     process.exitCode = 1;
-  });
+  };
+
+  server.once("listening", onListening);
+  server.on("error", onError);
+  server.listen(startPort, options.host);
 
   return server;
 }
@@ -82,6 +97,7 @@ function usage() {
     `  --root <path>   Codex sessions root. Defaults to ~/.codex/sessions\n` +
     `  --host <host>   Host to bind. Defaults to 127.0.0.1\n` +
     `  --port <port>   Port to bind. Defaults to 8765\n` +
+    `  --strict-port   Fail instead of using another port when the requested port is busy\n` +
     `  --open          Open the viewer in your default browser\n` +
     `  -h, --help      Show this help\n`;
 }

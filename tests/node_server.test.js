@@ -28,6 +28,54 @@ test("CLI defaults to the Codex sessions root and local URL port", () => {
   assert.equal(options.host, "127.0.0.1");
   assert.equal(options.port, 8765);
   assert.equal(options.open, false);
+  assert.equal(options.strictPort, false);
+});
+
+test("CLI automatically falls back when the requested port is busy", async () => {
+  const blocker = server.createHttpServer({ host: "127.0.0.1", port: 0 });
+  await listen(blocker);
+  const blockedPort = blocker.address().port;
+  const output = bufferedOutput();
+  const errorOutput = bufferedOutput();
+  let viewer;
+
+  try {
+    viewer = cli.runCli(["--port", String(blockedPort)], output, errorOutput);
+    await waitForListening(viewer, { ignoreBusyPort: true });
+
+    assert.notEqual(viewer.address().port, blockedPort);
+    assert.match(output.text(), /Port \d+ is busy; using available port \d+\./);
+    assert.match(output.text(), /Serving at: http:\/\/127\.0\.0\.1:\d+/);
+    assert.equal(errorOutput.text(), "");
+  } finally {
+    if (viewer && viewer.listening) {
+      await close(viewer);
+    }
+    await close(blocker);
+  }
+});
+
+test("CLI strict port reports a busy port instead of falling back", async () => {
+  const blocker = server.createHttpServer({ host: "127.0.0.1", port: 0 });
+  await listen(blocker);
+  const blockedPort = blocker.address().port;
+  const output = bufferedOutput();
+  const errorOutput = bufferedOutput();
+  let viewer;
+
+  try {
+    viewer = cli.runCli(["--port", String(blockedPort), "--strict-port"], output, errorOutput);
+    await waitForError(viewer);
+    process.exitCode = 0;
+
+    assert.equal(viewer.listening, false);
+    assert.match(errorOutput.text(), /Failed to start Codex Session Viewer: listen EADDRINUSE/);
+  } finally {
+    if (viewer && viewer.listening) {
+      await close(viewer);
+    }
+    await close(blocker);
+  }
 });
 
 test("dateToDir uses year month day segments", () => {
@@ -105,7 +153,7 @@ test("HTTP API serves dates, initial records, and static assets", async () => {
 function listen(httpd) {
   return new Promise((resolve, reject) => {
     httpd.once("error", reject);
-    httpd.listen(() => {
+    httpd.listen(httpd.port, httpd.host, () => {
       httpd.off("error", reject);
       resolve();
     });
@@ -116,6 +164,45 @@ function close(httpd) {
   return new Promise((resolve, reject) => {
     httpd.close((error) => (error ? reject(error) : resolve()));
   });
+}
+
+function waitForListening(httpd, options = {}) {
+  if (httpd.listening) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve, reject) => {
+    const onListening = () => {
+      httpd.off("error", onError);
+      resolve();
+    };
+    const onError = (error) => {
+      if (options.ignoreBusyPort && error.code === "EADDRINUSE") {
+        return;
+      }
+      httpd.off("listening", onListening);
+      reject(error);
+    };
+    httpd.once("listening", onListening);
+    httpd.on("error", onError);
+  });
+}
+
+function waitForError(httpd) {
+  return new Promise((resolve) => {
+    httpd.once("error", resolve);
+  });
+}
+
+function bufferedOutput() {
+  let buffer = "";
+  return {
+    write(chunk) {
+      buffer += chunk;
+    },
+    text() {
+      return buffer;
+    },
+  };
 }
 
 async function getJson(url) {
