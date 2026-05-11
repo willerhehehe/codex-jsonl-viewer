@@ -250,6 +250,22 @@ class ApiTests(unittest.TestCase):
             self.assertIn("inspector-tree-toolbar", css)
             self.assertIn("tree-action", css)
 
+    def test_static_browser_files_include_embedded_output_renderer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            with running_server(root) as base_url:
+                js = get_text(f"{base_url}/static/app.js")
+                css = get_text(f"{base_url}/static/styles.css")
+
+            self.assertIn("parseEmbeddedJsonText", js)
+            self.assertIn("renderRichValue", js)
+            self.assertIn("renderRichMarkdown", js)
+            self.assertIn("rich-embedded-json", js)
+            self.assertIn("rich-markdown", css)
+            self.assertIn("rich-code-block", css)
+            self.assertIn("rich-json", css)
+
 
 class running_server:
     def __init__(self, root: Path):

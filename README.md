@@ -12,6 +12,7 @@ It reads Codex session files from `~/.codex/sessions/YYYY/MM/DD`, renders each J
 - Inspector tabs for summary, structured JSON tree, raw JSON, and related events.
 - Expand all / collapse all controls for structured JSON.
 - Resizable inspector pane and latest-top / latest-bottom ordering.
+- Rich rendering for embedded JSON strings, Markdown-style text, and fenced code blocks in tool outputs.
 
 ## Quick Start
 

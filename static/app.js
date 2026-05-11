@@ -337,7 +337,7 @@ function renderRelatedInspector(item) {
 
 function renderJsonTree(value, label, depth) {
   if (value === null || typeof value !== "object") {
-    return `<div class="json-leaf"><span class="json-key">${escapeHtml(label)}</span><span class="json-value">${escapeHtml(valueToText(value))}</span></div>`;
+    return `<div class="json-leaf"><span class="json-key">${escapeHtml(label)}</span><span class="json-value">${renderRichValue(value)}</span></div>`;
   }
   const entries = Array.isArray(value) ? value.map((child, index) => [String(index), child]) : Object.entries(value);
   const open = depth < 2 ? " open" : "";
@@ -441,10 +441,139 @@ function renderValue(value, expanded, key) {
     const preview = text.slice(0, state.truncateAfter);
     return `${escapeHtml(preview)} <span class="muted">${text.length} chars ...</span><button class="inline-action" type="button" data-expand="${escapeAttr(key)}">+</button>`;
   }
+  if (expanded) {
+    return `<div class="rich-value">${renderRichValue(value)}</div>${isLong ? `<button class="inline-action" type="button" data-collapse="${escapeAttr(key)}">Collapse</button>` : ""}`;
+  }
   if (shouldPre) {
     return `<pre>${escapeHtml(text)}</pre>${isLong ? `<button class="inline-action" type="button" data-collapse="${escapeAttr(key)}">Collapse</button>` : ""}`;
   }
   return escapeHtml(text);
+}
+
+function renderRichValue(value) {
+  if (value === null || value === undefined) {
+    return `<span class="json-scalar muted">${escapeHtml(valueToText(value))}</span>`;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return `<span class="json-scalar">${escapeHtml(String(value))}</span>`;
+  }
+  if (typeof value === "object") {
+    return `<div class="rich-json">${renderJsonTree(value, "value", 0)}</div>`;
+  }
+
+  const text = String(value);
+  const embedded = parseEmbeddedJsonText(text);
+  if (embedded) {
+    return `
+      <details class="rich-embedded-json" open>
+        <summary>Parsed JSON string</summary>
+        <div class="rich-json">${renderJsonTree(embedded, "value", 0)}</div>
+      </details>
+    `;
+  }
+
+  const normalized = normalizeEscapedText(text);
+  if (shouldRenderRichMarkdown(normalized)) {
+    return renderRichMarkdown(normalized);
+  }
+
+  return `<span class="json-scalar">${escapeHtml(text)}</span>`;
+}
+
+function parseEmbeddedJsonText(text) {
+  const trimmed = String(text).trim();
+  if (!trimmed || (trimmed[0] !== "{" && trimmed[0] !== "[")) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(trimmed);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeEscapedText(text) {
+  const raw = String(text);
+  const escapedBreaks = (raw.match(/\\n/g) || []).length;
+  const realBreaks = (raw.match(/\n/g) || []).length;
+  if (escapedBreaks <= realBreaks) {
+    return raw;
+  }
+  return raw
+    .replaceAll("\\r\\n", "\n")
+    .replaceAll("\\n", "\n")
+    .replaceAll("\\t", "\t")
+    .replaceAll('\\"', '"');
+}
+
+function shouldRenderRichMarkdown(text) {
+  return text.includes("\n")
+    || text.includes("```")
+    || /^#{1,6}\s+/m.test(text)
+    || /^\s*[-*]\s+\S/m.test(text);
+}
+
+function renderRichMarkdown(text) {
+  const normalized = String(text);
+  const blocks = [];
+  const fence = /```([^\n`]*)\n?([\s\S]*?)```/g;
+  let cursor = 0;
+  let match;
+  while ((match = fence.exec(normalized)) !== null) {
+    if (match.index > cursor) {
+      blocks.push(renderRichMarkdownText(normalized.slice(cursor, match.index)));
+    }
+    const language = match[1].trim();
+    const code = match[2].replace(/^\n/, "").replace(/\n$/, "");
+    blocks.push(`
+      <div class="rich-code-shell">
+        ${language ? `<div class="rich-code-meta">${escapeHtml(language)}</div>` : ""}
+        <pre class="rich-code-block"><code>${escapeHtml(code)}</code></pre>
+      </div>
+    `);
+    cursor = fence.lastIndex;
+  }
+  if (cursor < normalized.length) {
+    blocks.push(renderRichMarkdownText(normalized.slice(cursor)));
+  }
+  return `<div class="rich-markdown">${blocks.join("")}</div>`;
+}
+
+function renderRichMarkdownText(text) {
+  const lines = String(text).split("\n");
+  const output = [];
+  let paragraph = [];
+  const flushParagraph = () => {
+    if (!paragraph.length) {
+      return;
+    }
+    output.push(`<p>${paragraph.map((line) => renderInlineRichText(line)).join("<br>")}</p>`);
+    paragraph = [];
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.trimEnd();
+    const heading = line.match(/^(#{1,6})\s+(.+)$/);
+    const listItem = line.match(/^\s*[-*]\s+(.+)$/);
+    if (!line.trim()) {
+      flushParagraph();
+    } else if (heading) {
+      flushParagraph();
+      output.push(`<div class="rich-heading level-${heading[1].length}">${renderInlineRichText(heading[2])}</div>`);
+    } else if (listItem) {
+      flushParagraph();
+      output.push(`<div class="rich-list-item">${renderInlineRichText(listItem[1])}</div>`);
+    } else {
+      paragraph.push(line);
+    }
+  }
+  flushParagraph();
+  return output.join("");
+}
+
+function renderInlineRichText(text) {
+  return escapeHtml(text).replace(/`([^`]+)`/g, (_, code) => `<code>${code}</code>`);
 }
 
 function collectFields() {
