@@ -39,7 +39,7 @@ const state = {
   autoScroll: true,
   query: "",
   fieldQuery: "",
-  eventOrder: "latest-bottom",
+  eventOrder: "latest-top",
   inspectorWide: false,
   inspectorWidth: readInspectorWidth(),
   truncateAfter: 180,
@@ -171,14 +171,21 @@ function renderFiles() {
   }).join("");
 }
 
-function renderEvents() {
+function renderEvents(options = {}) {
   const visible = orderedRecords(filteredRecords());
-  if (!visible.length) {
-    el.eventStream.innerHTML = `<div class="empty-state">No events</div>`;
-    return;
+  const render = () => {
+    if (!visible.length) {
+      el.eventStream.innerHTML = `<div class="empty-state">No events</div>`;
+      return;
+    }
+    el.eventStream.innerHTML = visible.map((item) => renderEvent(item)).join("");
+  };
+  if (options.preserveScroll) {
+    preserveScrollPosition(render);
+  } else {
+    render();
+    scrollIfNeeded();
   }
-  el.eventStream.innerHTML = visible.map((item) => renderEvent(item)).join("");
-  scrollIfNeeded();
 }
 
 function appendOrRender(item) {
@@ -186,7 +193,7 @@ function appendOrRender(item) {
     return;
   }
   if (state.eventOrder === "latest-top") {
-    renderEvents();
+    renderEvents({ preserveScroll: !state.autoScroll });
     return;
   }
   if (el.eventStream.querySelector(".empty-state")) {
@@ -665,8 +672,14 @@ function setStatus(text) {
 
 function scrollIfNeeded() {
   if (state.autoScroll) {
-    el.eventStream.scrollTop = el.eventStream.scrollHeight;
+    el.eventStream.scrollTop = state.eventOrder === "latest-top" ? 0 : el.eventStream.scrollHeight;
   }
+}
+
+function preserveScrollPosition(callback) {
+  const scrollTop = el.eventStream.scrollTop;
+  callback();
+  el.eventStream.scrollTop = scrollTop;
 }
 
 function escapeHtml(value) {
@@ -792,16 +805,16 @@ el.eventStream.addEventListener("click", async (event) => {
   const copyFull = event.target.closest("[data-copy-full]");
   if (expand) {
     state.expanded.add(expand.dataset.expand);
-    renderEvents();
+    renderEvents({ preserveScroll: true });
   } else if (collapse) {
     state.expanded.delete(collapse.dataset.collapse);
-    renderEvents();
+    renderEvents({ preserveScroll: true });
   } else if (copyFull) {
     const item = state.records.find((record) => String(record.lineNo) === copyFull.dataset.copyFull);
     await copyText(JSON.stringify(item?.record || {}, null, 2));
   } else if (selectLine) {
     state.selectedLineNo = Number(selectLine.dataset.selectLine);
-    renderEvents();
+    renderEvents({ preserveScroll: true });
     renderInspector();
   }
 });
@@ -845,7 +858,7 @@ el.inspectorContent.addEventListener("click", (event) => {
   } else if (selectLine) {
     state.selectedLineNo = Number(selectLine.dataset.selectLine);
     state.inspectorTab = "summary";
-    renderEvents();
+    renderEvents({ preserveScroll: true });
     renderInspector();
   } else {
     return;

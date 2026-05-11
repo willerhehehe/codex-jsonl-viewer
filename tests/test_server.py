@@ -174,6 +174,20 @@ class ApiTests(unittest.TestCase):
             self.assertIn("orderedRecords", js)
             self.assertIn("latest-top", html)
 
+    def test_static_browser_files_default_latest_top_and_preserve_scroll_on_selection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            with running_server(root) as base_url:
+                html = get_text(f"{base_url}/")
+                js = get_text(f"{base_url}/static/app.js")
+
+            self.assertIn('option value="latest-top" selected', html)
+            self.assertIn('eventOrder: "latest-top"', js)
+            self.assertIn("function renderEvents(options = {})", js)
+            self.assertIn("renderEvents({ preserveScroll: true })", js)
+            self.assertIn("preserveScrollPosition", js)
+
     def test_static_browser_files_include_semantic_stream_and_inspector(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
