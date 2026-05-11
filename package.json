@@ -12,7 +12,7 @@
   },
   "homepage": "https://github.com/willerhehehe/codex-jsonl-viewer#readme",
   "bin": {
-    "codex-jsonl-viewer": "./bin/codex-jsonl-viewer.js"
+    "codex-jsonl-viewer": "bin/codex-jsonl-viewer.js"
   },
   "files": [
     "bin/",

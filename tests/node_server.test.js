@@ -11,7 +11,7 @@ test("package exposes an npx bin without runtime dependencies", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
 
   assert.equal(pkg.name, "codex-jsonl-viewer");
-  assert.equal(pkg.bin["codex-jsonl-viewer"], "./bin/codex-jsonl-viewer.js");
+  assert.equal(pkg.bin["codex-jsonl-viewer"], "bin/codex-jsonl-viewer.js");
   assert.deepEqual(pkg.dependencies || {}, {});
 });
 
