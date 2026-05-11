@@ -1,0 +1,25 @@
+{
+  "name": "codex-jsonl-viewer",
+  "version": "0.1.0",
+  "description": "Local browser UI for following and inspecting Codex session JSONL files.",
+  "license": "MIT",
+  "bin": {
+    "codex-jsonl-viewer": "./bin/codex-jsonl-viewer.js"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "static/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test tests/node_server.test.js && python3 -m unittest tests.test_server && python3 -m py_compile server.py",
+    "test:node": "node --test tests/node_server.test.js",
+    "test:python": "python3 -m unittest tests.test_server"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {}
+}

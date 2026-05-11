@@ -13,21 +13,19 @@ It reads Codex session files from `~/.codex/sessions/YYYY/MM/DD`, renders each J
 - Expand all / collapse all controls for structured JSON.
 - Resizable inspector pane and latest-top / latest-bottom ordering.
 
-## Run
+## Quick Start
 
 ```bash
-git clone https://github.com/<owner>/codex-session-viewer.git
-cd codex-session-viewer
-python3 server.py --port 8765
+npx codex-jsonl-viewer
 ```
 
-Open:
+The command prints the local URL to open:
 
 ```text
 http://127.0.0.1:8765
 ```
 
-Default session root:
+The default session root is:
 
 ```text
 ~/.codex/sessions
@@ -38,19 +36,41 @@ The page scans `~/.codex/sessions/YYYY/MM/DD`, opens the most recently modified 
 To point the viewer at another sessions directory:
 
 ```bash
-python3 server.py --root /path/to/sessions --port 8765
+npx codex-jsonl-viewer --root /path/to/sessions
+```
+
+Other options:
+
+```bash
+npx codex-jsonl-viewer --port 9000
+npx codex-jsonl-viewer --host 0.0.0.0
+npx codex-jsonl-viewer --open
+```
+
+## Local Development
+
+```bash
+git clone https://github.com/<owner>/codex-session-viewer.git
+cd codex-session-viewer
+npm test
+node bin/codex-jsonl-viewer.js
 ```
 
 ## Requirements
 
-- Python 3.10+
-- No third-party Python packages
+- Node.js 18+
+- No runtime npm dependencies
+
+The repository also includes the original Python server as a fallback:
+
+```bash
+python3 server.py --port 8765
+```
 
 ## Verify
 
 ```bash
-python3 -m unittest discover -s tests -v
-python3 -m py_compile server.py
+npm test
 ```
 
 ## License
