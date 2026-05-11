@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Codex Session Viewer</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div>
+          <h1>Codex Session Viewer</h1>
+          <div id="rootPath" class="muted path-text"></div>
+        </div>
+        <div class="topbar-actions">
+          <label class="field-label" for="dateInput">Date</label>
+          <input id="dateInput" type="date">
+          <button id="refreshButton" type="button">Refresh</button>
+        </div>
+      </header>
+
+      <main id="mainLayout" class="layout">
+        <aside class="sidebar">
+          <div class="panel-title">Files</div>
+          <div id="dateStatus" class="muted"></div>
+          <div id="fileList" class="file-list"></div>
+        </aside>
+
+        <section class="stream-panel">
+          <div class="stream-toolbar">
+            <div>
+              <div id="activeFile" class="active-file"></div>
+              <div id="streamStatus" class="muted"></div>
+            </div>
+            <div class="toolbar-controls">
+              <input id="searchInput" type="search" placeholder="Search rendered events">
+              <select id="eventOrderSelect" aria-label="Event order">
+                <option value="latest-bottom">Latest bottom</option>
+                <option value="latest-top">Latest top</option>
+              </select>
+              <label class="check-label"><input id="autoScrollInput" type="checkbox" checked> Auto-scroll</label>
+              <button id="pauseButton" type="button">Pause</button>
+            </div>
+          </div>
+          <div id="eventFilterBar" class="event-filter-bar">
+            <button class="filter-chip active" type="button" data-filter="all">All</button>
+            <button class="filter-chip" type="button" data-filter="messages">Messages</button>
+            <button class="filter-chip" type="button" data-filter="tools">Tools</button>
+            <button class="filter-chip" type="button" data-filter="patches">Patches</button>
+            <button class="filter-chip" type="button" data-filter="errors">Errors</button>
+            <button class="filter-chip" type="button" data-filter="tokens">Tokens</button>
+            <button class="filter-chip" type="button" data-filter="context">Context</button>
+          </div>
+          <div id="eventStream" class="event-stream"></div>
+        </section>
+
+        <div
+          id="inspectorResizeHandle"
+          class="resize-handle"
+          role="separator"
+          aria-label="Resize inspector"
+          aria-orientation="vertical"
+          tabindex="0"
+        ></div>
+
+        <aside id="inspectorPanel" class="inspector-panel">
+          <div class="inspector-header">
+            <div class="panel-title">Inspector</div>
+            <button id="inspectorWideButton" class="inspector-wide-button" type="button">Wide</button>
+          </div>
+          <div id="inspectorStatus" class="muted">Select an event</div>
+          <div id="inspectorTabs" class="inspector-tabs">
+            <button class="inspector-tab active" type="button" data-inspector-tab="summary">Summary</button>
+            <button class="inspector-tab" type="button" data-inspector-tab="structured">Structured</button>
+            <button class="inspector-tab" type="button" data-inspector-tab="raw">Raw</button>
+            <button class="inspector-tab" type="button" data-inspector-tab="related">Related</button>
+          </div>
+          <div id="inspectorContent" class="inspector-content"></div>
+        </aside>
+      </main>
+    </div>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
