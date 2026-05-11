@@ -3,6 +3,14 @@
   "version": "0.1.0",
   "description": "Local browser UI for following and inspecting Codex session JSONL files.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/willerhehehe/codex-jsonl-viewer.git"
+  },
+  "bugs": {
+    "url": "https://github.com/willerhehehe/codex-jsonl-viewer/issues"
+  },
+  "homepage": "https://github.com/willerhehehe/codex-jsonl-viewer#readme",
   "bin": {
     "codex-jsonl-viewer": "./bin/codex-jsonl-viewer.js"
   },

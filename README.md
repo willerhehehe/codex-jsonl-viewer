@@ -50,8 +50,8 @@ npx codex-jsonl-viewer --open
 ## Local Development
 
 ```bash
-git clone https://github.com/<owner>/codex-session-viewer.git
-cd codex-session-viewer
+git clone https://github.com/willerhehehe/codex-jsonl-viewer.git
+cd codex-jsonl-viewer
 npm test
 node bin/codex-jsonl-viewer.js
 ```
