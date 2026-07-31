@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Codex Session Viewer</title>
+    <title>Context Explorer</title>
     <link rel="icon" type="image/svg+xml" href="/static/icon.svg">
     <link rel="stylesheet" href="/static/styles.css">
   </head>
@@ -12,7 +12,22 @@
       <header class="topbar">
         <div class="brand-block">
           <div class="brand-title-line">
-            <h1>Codex Session Viewer</h1>
+            <button
+              id="viewerSwitchButton"
+              class="viewer-switch-button"
+              type="button"
+              role="switch"
+              data-viewer="codex"
+              aria-label="Use Claude as the context source"
+              aria-checked="false"
+              title="Switch to Claude sessions"
+            >
+              <span class="viewer-switch-thumb" aria-hidden="true"></span>
+              <span class="viewer-switch-option viewer-switch-codex">Codex</span>
+              <span class="viewer-switch-option viewer-switch-claude">Claude</span>
+            </button>
+            <span class="brand-divider" aria-hidden="true"></span>
+            <h1>Context Explorer</h1>
             <span id="appVersion" class="app-version" aria-label="Application version"></span>
             <button id="updateButton" class="update-button" type="button" hidden></button>
           </div>
@@ -23,15 +38,21 @@
           <button class="view-tab active" type="button" data-view="turns">Turns</button>
         </nav>
         <div class="topbar-actions">
-          <label class="field-label" for="dateInput">Date</label>
-          <input id="dateInput" type="date">
+          <div id="dateControl" class="date-control">
+            <label class="field-label" for="dateInput">Date</label>
+            <input id="dateInput" type="date">
+          </div>
           <button id="refreshButton" type="button">Refresh</button>
         </div>
       </header>
 
       <main id="mainLayout" class="layout">
         <aside class="sidebar">
-          <div class="panel-title">Files</div>
+          <div id="sidebarTitle" class="panel-title">Files</div>
+          <label id="claudeProjectControl" class="claude-project-control" for="claudeProjectSelect" hidden>
+            <span>Project</span>
+            <select id="claudeProjectSelect"></select>
+          </label>
           <div id="dateStatus" class="muted"></div>
           <div id="fileList" class="file-list"></div>
         </aside>
@@ -55,7 +76,7 @@
                     >▾</button>
                     <div id="copyTailMenu" class="split-menu" role="menu" hidden></div>
                   </div>
-                  <button id="copyHandoffButton" class="session-handoff-button" type="button" disabled>Copy handoff</button>
+                  <button id="copyHandoffButton" class="session-handoff-button" type="button" title="Copy all session turns for handoff" disabled>Copy handoff</button>
                 </div>
               </div>
               <div id="streamStatus" class="muted"></div>
@@ -117,6 +138,7 @@
       </main>
     </div>
 
+    <script src="/static/claude-viewer.js"></script>
     <script src="/static/app.js"></script>
   </body>
 </html>

@@ -4,6 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { URL } = require("node:url");
+const claudeViewer = require("./claude-viewer");
 const { createUpdateManager, detectInstallMode } = require("./update-manager");
 
 const DEFAULT_ROOT = "~/.codex/sessions";
@@ -280,8 +281,10 @@ function createTurnSummary(turnId, item, baselineUsage) {
     toolCount: 0,
     toolNames: [],
     userMessage: "",
+    userMessageFull: "",
     userMessagePriority: 0,
     assistantMessage: "",
+    assistantMessageFull: "",
     composition: emptyComposition(),
     baselineUsage: { ...baselineUsage },
     lastUsage: null,
@@ -408,20 +411,22 @@ function turnCategory(record) {
 }
 
 function setPreferredMessage(turn, key, value, priority) {
-  const text = oneLineText(value, 600);
-  if (!text) {
+  const fullText = String(value || "").trim();
+  if (!fullText) {
     return;
   }
+  const text = oneLineText(fullText, 600);
   const priorityKey = key === "userMessage" ? "userMessagePriority" : "assistantMessagePriority";
   if (!turn[key] || priority >= (turn[priorityKey] || 0)) {
     turn[key] = text;
+    turn[`${key}Full`] = fullText;
     turn[priorityKey] = priority;
   }
 }
 
 function messageText(value) {
   if (Array.isArray(value)) {
-    return value.map((item) => messageText(item)).filter(Boolean).join(" ");
+    return value.map((item) => messageText(item)).filter(Boolean).join("\n");
   }
   if (value && typeof value === "object") {
     return messageText(value.text ?? value.content ?? value.message ?? "");
@@ -514,12 +519,14 @@ function createHttpServer({
   host = "127.0.0.1",
   port = 8765,
   root = DEFAULT_ROOT,
+  claudeRoot = claudeViewer.DEFAULT_CLAUDE_ROOT,
   staticDir = STATIC_DIR,
   installMode = detectInstallMode(),
   restartProcess = null,
   updateManager = null,
 } = {}) {
   const sessionsRoot = resolveSessionsRoot(root);
+  const claudeProjectsRoot = claudeViewer.resolveProjectsRoot(claudeRoot);
   const staticRoot = path.resolve(staticDir);
   const metadata = appMetadata();
   const updates = updateManager || createUpdateManager({
@@ -528,11 +535,12 @@ function createHttpServer({
     restartProcess,
   });
   const updateToken = crypto.randomBytes(24).toString("base64url");
-  const context = { sessionsRoot, staticRoot, metadata, updates, updateToken };
+  const context = { sessionsRoot, claudeProjectsRoot, staticRoot, metadata, updates, updateToken };
   const server = http.createServer((request, response) => {
     handleRequest(request, response, context);
   });
   server.sessionsRoot = sessionsRoot;
+  server.claudeRoot = claudeProjectsRoot;
   server.staticDir = staticRoot;
   server.updateManager = updates;
   server.host = host;
@@ -541,7 +549,7 @@ function createHttpServer({
 }
 
 function handleRequest(request, response, context) {
-  const { sessionsRoot, staticRoot, metadata, updates, updateToken } = context;
+  const { sessionsRoot, claudeProjectsRoot, staticRoot, metadata, updates, updateToken } = context;
   const requestUrl = new URL(request.url, "http://127.0.0.1");
   try {
     if (requestUrl.pathname === "/api/meta") {
@@ -577,6 +585,27 @@ function handleRequest(request, response, context) {
     } else if (requestUrl.pathname === "/api/stream") {
       requireMethod(request, "GET");
       handleStream(requestUrl, request, response, sessionsRoot);
+    } else if (requestUrl.pathname === "/api/claude/projects") {
+      requireMethod(request, "GET");
+      writeJson(response, {
+        root: claudeProjectsRoot,
+        projects: claudeViewer.listProjects(claudeProjectsRoot),
+      });
+    } else if (requestUrl.pathname === "/api/claude/sessions") {
+      requireMethod(request, "GET");
+      handleClaudeSessions(requestUrl, response, claudeProjectsRoot);
+    } else if (requestUrl.pathname === "/api/claude/initial") {
+      requireMethod(request, "GET");
+      handleClaudeInitial(requestUrl, response, claudeProjectsRoot);
+    } else if (requestUrl.pathname === "/api/claude/turns") {
+      requireMethod(request, "GET");
+      handleClaudeTurns(requestUrl, response, claudeProjectsRoot);
+    } else if (requestUrl.pathname === "/api/claude/turn-events") {
+      requireMethod(request, "GET");
+      handleClaudeTurnEvents(requestUrl, response, claudeProjectsRoot);
+    } else if (requestUrl.pathname === "/api/claude/stream") {
+      requireMethod(request, "GET");
+      handleClaudeStream(requestUrl, request, response, claudeProjectsRoot);
     } else {
       requireMethod(request, "GET");
       handleStatic(requestUrl.pathname, response, staticRoot);
@@ -584,6 +613,83 @@ function handleRequest(request, response, context) {
   } catch (error) {
     writeHttpError(response, error);
   }
+}
+
+function handleClaudeSessions(requestUrl, response, claudeProjectsRoot) {
+  const project = requiredParam(requestUrl, "project");
+  writeJson(response, {
+    root: claudeProjectsRoot,
+    project,
+    sessions: claudeViewer.listSessionFiles(claudeProjectsRoot, project),
+  });
+}
+
+function handleClaudeInitial(requestUrl, response, claudeProjectsRoot) {
+  const { project, file, filePath } = claudeRequestTarget(requestUrl, claudeProjectsRoot);
+  const limit = boundedInt(requestUrl.searchParams.get("limit"), 200, 1, 1000);
+  const { records, offset } = claudeViewer.readRecentJsonl(filePath, limit);
+  writeJson(response, { project, file, path: filePath, records, offset });
+}
+
+function handleClaudeTurns(requestUrl, response, claudeProjectsRoot) {
+  const { project, file, filePath } = claudeRequestTarget(requestUrl, claudeProjectsRoot);
+  writeJson(response, {
+    project,
+    file,
+    ...claudeViewer.summarizeSessionTurns(filePath),
+  });
+}
+
+function handleClaudeTurnEvents(requestUrl, response, claudeProjectsRoot) {
+  const { project, file, filePath } = claudeRequestTarget(requestUrl, claudeProjectsRoot);
+  const start = boundedInt(requestUrl.searchParams.get("start"), 0, 0, 10 ** 15);
+  const end = boundedInt(requestUrl.searchParams.get("end"), 0, 0, 10 ** 15);
+  if (end < start) {
+    throw badRequest("end must be greater than or equal to start");
+  }
+  writeJson(response, {
+    project,
+    file,
+    start,
+    end,
+    records: claudeViewer.readJsonlRange(filePath, start, end),
+  });
+}
+
+function handleClaudeStream(requestUrl, request, response, claudeProjectsRoot) {
+  const { filePath } = claudeRequestTarget(requestUrl, claudeProjectsRoot);
+  const offset = boundedInt(requestUrl.searchParams.get("offset"), 0, 0, 10 ** 15);
+  const tailer = new claudeViewer.ClaudeJsonlTailer(filePath, offset);
+
+  response.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+
+  const tick = () => {
+    const records = tailer.readAvailable();
+    if (records.length) {
+      for (const record of records) {
+        response.write(`data: ${JSON.stringify(record)}\n\n`);
+      }
+    } else {
+      response.write(": keepalive\n\n");
+    }
+  };
+  tick();
+  const timer = setInterval(tick, 500);
+  request.on("close", () => clearInterval(timer));
+}
+
+function claudeRequestTarget(requestUrl, claudeProjectsRoot) {
+  const project = requiredParam(requestUrl, "project");
+  const file = requiredParam(requestUrl, "file");
+  return {
+    project,
+    file,
+    filePath: claudeViewer.safeSessionPath(claudeProjectsRoot, project, file),
+  };
 }
 
 function handleAsyncJson(response, promise, status = 200) {

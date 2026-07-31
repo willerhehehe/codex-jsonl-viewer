@@ -1,5 +1,6 @@
 const { spawn } = require("node:child_process");
 const path = require("node:path");
+const { DEFAULT_CLAUDE_ROOT, resolveProjectsRoot } = require("./claude-viewer");
 const { DEFAULT_ROOT, createHttpServer, resolveSessionsRoot } = require("./session-server");
 const { npxCommand } = require("./update-manager");
 
@@ -8,6 +9,7 @@ function parseArgs(argv) {
     host: "127.0.0.1",
     port: 8765,
     root: DEFAULT_ROOT,
+    claudeRoot: DEFAULT_CLAUDE_ROOT,
     open: false,
     help: false,
     strictPort: false,
@@ -27,6 +29,11 @@ function parseArgs(argv) {
       options.root = arg.slice("--root=".length);
     } else if (arg === "--root") {
       options.root = nextValue(argv, index, "--root");
+      index += 1;
+    } else if (arg.startsWith("--claude-root=")) {
+      options.claudeRoot = arg.slice("--claude-root=".length);
+    } else if (arg === "--claude-root") {
+      options.claudeRoot = nextValue(argv, index, "--claude-root");
       index += 1;
     } else if (arg.startsWith("--host=")) {
       options.host = arg.slice("--host=".length);
@@ -67,12 +74,13 @@ function runCli(argv = process.argv.slice(2), output = process.stdout, errorOutp
   const onListening = () => {
     const address = server.address();
     const url = `http://${options.host}:${address.port}`;
-    output.write(`Codex Session Viewer\n`);
+    output.write(`Context Explorer\n`);
     if (startPort !== 0 && address.port !== startPort) {
       output.write(`Port ${startPort} is busy; using available port ${address.port}.\n`);
     }
     output.write(`Serving at: ${url}\n`);
     output.write(`Session root: ${resolveSessionsRoot(options.root)}\n`);
+    output.write(`Claude root: ${resolveProjectsRoot(options.claudeRoot)}\n`);
     output.write(`Press Ctrl+C to stop.\n`);
     if (options.open) {
       openBrowser(url);
@@ -84,7 +92,7 @@ function runCli(argv = process.argv.slice(2), output = process.stdout, errorOutp
       server.listen(0, options.host);
       return;
     }
-    errorOutput.write(`Failed to start Codex Session Viewer: ${error.message}\n`);
+    errorOutput.write(`Failed to start Context Explorer: ${error.message}\n`);
     process.exitCode = 1;
   };
 
@@ -99,6 +107,7 @@ function usage() {
   return `Usage: codex-jsonl-viewer [options]\n\n` +
     `Options:\n` +
     `  --root <path>   Codex sessions root. Defaults to ~/.codex/sessions\n` +
+    `  --claude-root <path>  Claude projects root. Defaults to ~/.claude/projects\n` +
     `  --host <host>   Host to bind. Defaults to 127.0.0.1\n` +
     `  --port <port>   Port to bind. Defaults to 8765\n` +
     `  --strict-port   Fail instead of using another port when the requested port is busy\n` +
@@ -135,10 +144,15 @@ function openBrowser(url) {
 function serializeCliArgs(options) {
   const args = [
     "--root", options.root,
+  ];
+  if (options.claudeRoot) {
+    args.push("--claude-root", options.claudeRoot);
+  }
+  args.push(
     "--host", options.host,
     "--port", String(options.port),
     "--no-open",
-  ];
+  );
   if (options.strictPort) {
     args.push("--strict-port");
   }

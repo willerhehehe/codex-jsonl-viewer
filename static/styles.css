@@ -28,6 +28,18 @@
   box-sizing: border-box;
 }
 
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 [hidden] {
   display: none !important;
 }
@@ -119,37 +131,120 @@ select {
 .brand-title-line {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   margin-bottom: 5px;
 }
 
 .brand-title-line h1 {
   margin: 0;
+  white-space: nowrap;
+  font-size: 15px;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+
+.brand-divider {
+  flex: 0 0 auto;
+  width: 1px;
+  height: 26px;
+  margin: 0 3px;
+  background: var(--border-strong);
 }
 
 .app-version {
   flex: 0 0 auto;
-  border: 1px solid #bfdbfe;
-  border-radius: 999px;
-  background: var(--accent-soft);
-  padding: 1px 6px;
-  color: var(--accent);
+  padding: 0;
+  color: var(--muted);
   font-family: var(--mono);
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 1.4;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
 }
 
 .app-version:empty {
   display: none;
 }
 
+.viewer-switch-button {
+  position: relative;
+  isolation: isolate;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(58px, 1fr));
+  align-items: center;
+  width: 142px;
+  min-height: 30px;
+  border-color: var(--border-strong);
+  border-radius: 999px;
+  background: #eef2f6;
+  padding: 3px;
+  overflow: hidden;
+  color: #475467;
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.viewer-switch-button:hover {
+  border-color: var(--accent);
+}
+
+.viewer-switch-button[data-viewer="claude"]:hover {
+  border-color: #a6532d;
+}
+
+.viewer-switch-button:active {
+  transform: scale(0.98);
+}
+
+.viewer-switch-thumb {
+  position: absolute;
+  z-index: -1;
+  top: 3px;
+  bottom: 3px;
+  left: 3px;
+  width: calc((100% - 6px) / 2);
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 1px 2px rgb(15 23 42 / 0.18);
+  transition: transform 160ms ease, background-color 160ms ease;
+}
+
+.viewer-switch-button[data-viewer="claude"] .viewer-switch-thumb {
+  background: #a6532d;
+  transform: translateX(100%);
+}
+
+.viewer-switch-option {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  min-height: 22px;
+  transition: color 160ms ease;
+}
+
+.viewer-switch-button[data-viewer="codex"] .viewer-switch-codex,
+.viewer-switch-button[data-viewer="claude"] .viewer-switch-claude {
+  color: #fff;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .viewer-switch-thumb,
+  .viewer-switch-option {
+    transition: none;
+  }
+}
+
 .update-button {
   flex: 0 0 auto;
+  min-height: 24px;
   border-color: #a7f3d0;
-  border-radius: 999px;
+  border-radius: 6px;
   background: #ecfdf3;
-  padding: 1px 7px;
+  padding: 0 7px;
   color: #047857;
   font-family: var(--mono);
   font-size: 10px;
@@ -225,6 +320,12 @@ h1 {
   gap: 8px;
 }
 
+.date-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .layout {
   height: 100%;
   min-height: 0;
@@ -254,6 +355,23 @@ h1 {
 
 .sidebar {
   border-right: 1px solid var(--border);
+}
+
+.claude-project-control {
+  display: grid;
+  gap: 5px;
+  margin: 10px 0 8px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.claude-project-control select {
+  width: 100%;
+  min-width: 0;
+  text-transform: none;
 }
 
 .inspector-panel {
@@ -1720,5 +1838,70 @@ h1 {
 
   .topbar {
     grid-template-columns: minmax(220px, auto) 1fr auto;
+  }
+}
+
+@media (max-width: 800px) {
+  .topbar {
+    height: auto;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px 12px;
+  }
+
+  .brand-block {
+    grid-column: 1 / -1;
+  }
+
+  .brand-title-line {
+    flex-wrap: wrap;
+  }
+
+  .brand-title-line h1 {
+    font-size: 16px;
+  }
+
+  .view-tabs {
+    grid-column: 1;
+  }
+
+  .topbar-actions {
+    grid-column: 2;
+  }
+}
+
+@media (max-width: 420px) {
+  .topbar {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .brand-block,
+  .view-tabs,
+  .topbar-actions {
+    grid-column: 1;
+  }
+
+  .topbar-actions {
+    justify-content: space-between;
+  }
+
+  .brand-title-line {
+    gap: 6px;
+  }
+
+  .viewer-switch-button {
+    grid-template-columns: repeat(2, minmax(52px, 1fr));
+    width: 128px;
+  }
+
+  .brand-divider {
+    display: none;
+  }
+
+  .brand-title-line h1 {
+    font-size: 14px;
+  }
+
+  .app-version {
+    font-size: 10px;
   }
 }

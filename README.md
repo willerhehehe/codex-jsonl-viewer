@@ -1,18 +1,19 @@
-# Codex Session Viewer
+# Context Explorer
 
-Local browser UI for following and inspecting Codex session JSONL files.
+Local browser UI for following and inspecting Codex and Claude Code session JSONL files.
 
-It reads Codex session files from `~/.codex/sessions/YYYY/MM/DD`, renders each JSONL event into a readable stream, and provides an inspector for the underlying JSON structure.
+Use the switch in the top-left corner to move between the Codex and Claude viewers. Each provider keeps its own session discovery and JSONL parsing while sharing the turn-oriented browsing experience.
 
 ## Features
 
-- Date and rollout file picker for Codex session logs.
+- Top-left Codex / Claude viewer switch.
+- Date and rollout file picker for Codex sessions, plus project and session browsing for Claude Code.
 - Live tailing through server-sent events.
 - Readable event stream with filters for messages, tools, patches, errors, tokens, and context.
 - Turn ledger that groups each user conversation round with compact and narrative views.
 - Session-total and per-turn context composition by payload size or event count, with token deltas reported separately.
-- One-click paste-ready session handoff through the selected turn, including the recorded working directory while excluding Git state and private/internal context.
-- One-click `tail -F … | jq` command for the selected rollout file, with variants for follow, new lines only, replay from start, and raw tail, so the same session can be traced in a terminal.
+- One-click paste-ready handoff covering every turn in the selected session, including full user requests, final assistant replies, and the recorded working directory while excluding Git state and private/internal context.
+- One-click `tail -F … | jq` command for the selected session file, with variants for follow, new lines only, replay from start, and raw tail, so the same session can be traced in a terminal.
 - Lazy loading of raw events for a selected turn, so large sessions stay responsive.
 - Inspector tabs for summary, structured JSON tree, raw JSON, and related events.
 - Expand all / collapse all controls for structured JSON.
@@ -40,12 +41,21 @@ The default session root is:
 ~/.codex/sessions
 ```
 
+The default Claude projects root is:
+
+```text
+~/.claude/projects
+```
+
 The page scans `~/.codex/sessions/YYYY/MM/DD`, opens the most recently modified `rollout-*.jsonl` for the selected date, and tails appended JSONL lines through server-sent events.
 
-To point the viewer at another sessions directory:
+Switch to Claude in the top-left corner to select a project and session. The Claude viewer provides the same Turn, Events, Inspector, context-composition, Copy handoff, and Copy tail workflows where the source data supports them. Codex and Claude discovery, turn boundaries, event categories, and token metadata are parsed independently so provider-specific formats do not leak into each other.
+
+To point either viewer at another sessions directory:
 
 ```bash
 npx codex-jsonl-viewer --root /path/to/sessions
+npx codex-jsonl-viewer --claude-root /path/to/claude/projects
 ```
 
 Other options:
@@ -56,6 +66,8 @@ npx codex-jsonl-viewer --host 0.0.0.0
 npx codex-jsonl-viewer --strict-port
 npx codex-jsonl-viewer --open
 ```
+
+All session files are read locally and treated as read-only. The viewer does not upload session data.
 
 ## Local Development
 
@@ -80,8 +92,8 @@ npm test
 ## In-app updates
 
 The header checks npm for a newer version without blocking startup. When an
-update is available, click the version badge and confirm to install or warm the
-new package, restart the local server with the same root, host, and port, and
+update is available, click the update notice and confirm to install or warm the
+new package, restart the local server with the same roots, host, and port, and
 reload the page automatically. Source checkouts are never modified; development
 mode shows a manual update command instead.
 

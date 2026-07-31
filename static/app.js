@@ -1,6 +1,7 @@
 const INSPECTOR_WIDTH_STORAGE_KEY = "jsonl-session-viewer.inspector-width";
 const TAIL_VARIANT_STORAGE_KEY = "jsonl-session-viewer.tail-variant";
 const UPDATE_TARGET_STORAGE_KEY = "jsonl-session-viewer.update-target";
+const VIEWER_STORAGE_KEY = "jsonl-session-viewer.viewer";
 const TAIL_JQ_SUFFIX = `jq -Rr -C --unbuffered 'fromjson? // .'`;
 const TAIL_VARIANTS = [
   { key: "follow", label: "Follow (tail -F)", args: "-F" },
@@ -38,9 +39,12 @@ const DEFAULT_FIELDS = new Set([
 ]);
 
 const state = {
+  viewer: readViewerPreference(),
   root: "",
   dates: [],
   selectedDate: "",
+  projects: [],
+  selectedProject: "",
   files: [],
   selectedFile: "",
   records: [],
@@ -76,14 +80,20 @@ const state = {
   updateToken: "",
   updateStatus: null,
   updatePollTimer: null,
+  loadGeneration: 0,
 };
 
 const el = {
   appVersion: document.querySelector("#appVersion"),
   updateButton: document.querySelector("#updateButton"),
+  viewerSwitchButton: document.querySelector("#viewerSwitchButton"),
   rootPath: document.querySelector("#rootPath"),
   viewTabs: document.querySelector("#viewTabs"),
   dateInput: document.querySelector("#dateInput"),
+  dateControl: document.querySelector("#dateControl"),
+  sidebarTitle: document.querySelector("#sidebarTitle"),
+  claudeProjectControl: document.querySelector("#claudeProjectControl"),
+  claudeProjectSelect: document.querySelector("#claudeProjectSelect"),
   copyHandoffButton: document.querySelector("#copyHandoffButton"),
   copyTailGroup: document.querySelector("#copyTailGroup"),
   copyTailButton: document.querySelector("#copyTailButton"),
@@ -123,6 +133,44 @@ async function api(path, options = {}) {
   return body;
 }
 
+function nextLoadGeneration() {
+  state.loadGeneration += 1;
+  return state.loadGeneration;
+}
+
+function isCurrentLoad(generation) {
+  return generation === state.loadGeneration;
+}
+
+function readViewerPreference() {
+  const queryViewer = new URLSearchParams(window.location.search).get("viewer");
+  if (["codex", "claude"].includes(queryViewer)) {
+    return queryViewer;
+  }
+  try {
+    const stored = localStorage.getItem(VIEWER_STORAGE_KEY);
+    return stored === "claude" ? "claude" : "codex";
+  } catch {
+    return "codex";
+  }
+}
+
+function isClaudeViewer() {
+  return state.viewer === "claude";
+}
+
+function setViewerPreference(viewer) {
+  state.viewer = viewer === "claude" ? "claude" : "codex";
+  try {
+    localStorage.setItem(VIEWER_STORAGE_KEY, state.viewer);
+  } catch {
+    // Viewer persistence is a convenience only.
+  }
+  const url = new URL(window.location.href);
+  url.searchParams.set("viewer", state.viewer);
+  window.history.replaceState(null, "", url);
+}
+
 async function loadAppMetadata() {
   const data = await api("/api/meta");
   if (!data.version) {
@@ -131,7 +179,8 @@ async function loadAppMetadata() {
   state.appVersion = data.version;
   state.updateToken = data.updateToken || "";
   el.appVersion.textContent = `v${data.version}`;
-  document.title = `Codex Session Viewer v${data.version}`;
+  el.appVersion.setAttribute("aria-label", `Application version v${data.version}`);
+  document.title = `Context Explorer v${data.version}`;
   if (sessionStorage.getItem(UPDATE_TARGET_STORAGE_KEY) === data.version) {
     sessionStorage.removeItem(UPDATE_TARGET_STORAGE_KEY);
   }
@@ -183,7 +232,7 @@ async function requestUpdate() {
     return;
   }
   const confirmed = window.confirm(
-    `Update Codex Session Viewer from v${update.currentVersion} to v${update.latestVersion} and restart?`,
+    `Update Context Explorer from v${update.currentVersion} to v${update.latestVersion} and restart?`,
   );
   if (!confirmed) {
     return;
@@ -238,49 +287,169 @@ function monitorUpdate(targetVersion) {
   state.updatePollTimer = setTimeout(poll, 500);
 }
 
-async function loadDates() {
-  setStatus("Loading dates");
-  const data = await api("/api/dates");
-  state.root = data.root;
-  state.dates = data.dates || [];
-  state.selectedDate = state.dates.includes(data.today) ? data.today : (state.dates[0] || data.today);
-  el.rootPath.textContent = state.root;
-  el.dateInput.value = state.selectedDate;
-  await loadFiles();
+async function loadViewer() {
+  const generation = nextLoadGeneration();
+  closeStream();
+  resetSessionState();
+  syncViewerChrome();
+  if (isClaudeViewer()) {
+    await loadClaudeProjects(generation);
+  } else {
+    await loadDates(generation);
+  }
 }
 
-async function loadFiles() {
-  closeStream();
+function syncViewerChrome() {
+  const claude = isClaudeViewer();
+  el.viewerSwitchButton.dataset.viewer = state.viewer;
+  el.viewerSwitchButton.setAttribute("aria-checked", String(claude));
+  el.viewerSwitchButton.title = claude ? "Switch to Codex sessions" : "Switch to Claude sessions";
+  el.dateControl.hidden = claude;
+  el.claudeProjectControl.hidden = !claude;
+  el.sidebarTitle.textContent = claude ? "Sessions" : "Files";
+  for (const filter of el.eventFilterBar.querySelectorAll("[data-filter]")) {
+    filter.hidden = claude && ["patches", "tokens"].includes(filter.dataset.filter);
+  }
+}
+
+function resetViewerFilters() {
+  state.query = "";
+  state.eventFilter = "all";
+  el.searchInput.value = "";
+  for (const filter of el.eventFilterBar.querySelectorAll("[data-filter]")) {
+    filter.classList.toggle("active", filter.dataset.filter === "all");
+  }
+}
+
+function resetSessionState() {
   state.records = [];
   state.turns = [];
+  state.sessionContext = {};
   state.session = {};
+  state.files = [];
+  state.selectedFile = "";
   state.turnRecords = new Map();
   state.selectedTurnId = null;
   state.expandedTurns = new Set();
   state.selectedLineNo = null;
+  state.turnPhaseFilter = "";
   state.offset = 0;
   setFileActionsEnabled(false);
+  el.activeFile.textContent = "";
+  renderFiles();
   renderEvents();
   renderInspector();
+}
+
+async function loadDates(generation = nextLoadGeneration()) {
+  setStatus("Loading dates");
+  const data = await api("/api/dates");
+  if (!isCurrentLoad(generation)) {
+    return;
+  }
+  state.root = data.root;
+  state.dates = data.dates || [];
+  state.selectedDate = state.dates.includes(data.today) ? data.today : (state.dates[0] || data.today);
+  el.rootPath.textContent = state.root;
+  el.rootPath.title = state.root;
+  el.dateInput.value = state.selectedDate;
+  await loadFiles(generation);
+}
+
+async function loadFiles(generation = nextLoadGeneration()) {
+  if (!isCurrentLoad(generation)) {
+    return;
+  }
+  const selectedDate = state.selectedDate;
+  resetSessionState();
   setStatus("Loading files");
-  const data = await api(`/api/files?date=${encodeURIComponent(state.selectedDate)}`);
+  const data = await api(`/api/files?date=${encodeURIComponent(selectedDate)}`);
+  if (!isCurrentLoad(generation) || state.selectedDate !== selectedDate || isClaudeViewer()) {
+    return;
+  }
   state.files = data.files || [];
   state.selectedFile = state.files[0]?.name || "";
   renderFiles();
   if (state.selectedFile) {
-    await loadInitial();
+    await loadInitial(generation);
   } else {
     el.activeFile.textContent = "";
     setStatus("No rollout files");
   }
 }
 
-async function loadInitial() {
+async function loadClaudeProjects(generation = nextLoadGeneration()) {
+  setStatus("Loading Claude projects");
+  const data = await api(window.ClaudeSessionViewer.projectsPath);
+  if (!isCurrentLoad(generation) || !isClaudeViewer()) {
+    return;
+  }
+  state.root = data.root;
+  state.projects = data.projects || [];
+  if (!state.projects.some((project) => project.id === state.selectedProject)) {
+    state.selectedProject = state.projects[0]?.id || "";
+  }
+  el.rootPath.textContent = state.root;
+  el.rootPath.title = state.root;
+  renderClaudeProjects();
+  await loadClaudeSessions(generation);
+}
+
+function renderClaudeProjects() {
+  el.claudeProjectSelect.innerHTML = state.projects.map((project) => (
+    `<option value="${escapeAttr(project.id)}" title="${escapeAttr(project.cwd || project.path || project.id)}">${escapeHtml(project.displayName || project.name || project.id)} · ${formatNumber(project.sessionCount || 0)}</option>`
+  )).join("");
+  el.claudeProjectSelect.value = state.selectedProject;
+}
+
+async function loadClaudeSessions(generation = nextLoadGeneration()) {
+  if (!isCurrentLoad(generation) || !isClaudeViewer()) {
+    return;
+  }
+  const selectedProject = state.selectedProject;
+  resetSessionState();
+  renderClaudeProjects();
+  if (!state.selectedProject) {
+    el.dateStatus.textContent = "No Claude projects";
+    setStatus("No Claude sessions");
+    return;
+  }
+  setStatus("Loading Claude sessions");
+  const data = await api(window.ClaudeSessionViewer.sessionsPath(selectedProject));
+  if (!isCurrentLoad(generation) || !isClaudeViewer() || state.selectedProject !== selectedProject) {
+    return;
+  }
+  state.files = data.sessions || [];
+  state.selectedFile = state.files[0]?.name || "";
+  renderFiles();
+  if (state.selectedFile) {
+    await loadInitial(generation);
+  } else {
+    setStatus("No Claude sessions in this project");
+  }
+}
+
+async function loadInitial(generation = nextLoadGeneration()) {
   closeStream();
+  const viewer = state.viewer;
+  const selectedProject = state.selectedProject;
+  const selectedDate = state.selectedDate;
+  const selectedFile = state.selectedFile;
   const limit = 250;
-  const url = `/api/initial?date=${encodeURIComponent(state.selectedDate)}&file=${encodeURIComponent(state.selectedFile)}&limit=${limit}`;
-  const turnsUrl = `/api/turns?date=${encodeURIComponent(state.selectedDate)}&file=${encodeURIComponent(state.selectedFile)}`;
+  const [url, turnsUrl] = isClaudeViewer()
+    ? window.ClaudeSessionViewer.initialPaths(state, limit)
+    : [
+      `/api/initial?date=${encodeURIComponent(state.selectedDate)}&file=${encodeURIComponent(state.selectedFile)}&limit=${limit}`,
+      `/api/turns?date=${encodeURIComponent(state.selectedDate)}&file=${encodeURIComponent(state.selectedFile)}`,
+    ];
   const [data, turnData] = await Promise.all([api(url), api(turnsUrl)]);
+  if (!isCurrentLoad(generation)
+    || state.viewer !== viewer
+    || state.selectedProject !== selectedProject
+    || state.selectedDate !== selectedDate
+    || state.selectedFile !== selectedFile) {
+    return;
+  }
   state.records = data.records || [];
   state.turns = turnData.turns || [];
   state.sessionContext = turnData.sessionContext || {};
@@ -294,7 +463,10 @@ async function loadInitial() {
   renderEvents();
   renderInspector();
   renderViewMode();
-  el.activeFile.textContent = `${formatFileName(state.selectedFile)} · ${formatFileId(state.selectedFile)}`;
+  const selected = state.files.find((file) => file.name === state.selectedFile) || { name: state.selectedFile };
+  el.activeFile.textContent = isClaudeViewer()
+    ? window.ClaudeSessionViewer.activeFileLabel(selected)
+    : `${formatFileName(state.selectedFile)} · ${formatFileId(state.selectedFile)}`;
   setStatus(`${state.turns.length} turns · ${state.records.length} recent events`);
   if (!state.paused) {
     openStream();
@@ -303,25 +475,39 @@ async function loadInitial() {
 
 function openStream() {
   closeStream();
-  if (!state.selectedDate || !state.selectedFile || state.paused) {
+  const hasNavigation = isClaudeViewer() ? state.selectedProject : state.selectedDate;
+  if (!hasNavigation || !state.selectedFile || state.paused) {
     return;
   }
-  const params = new URLSearchParams({
-    date: state.selectedDate,
-    file: state.selectedFile,
-    offset: String(state.offset),
-  });
-  state.stream = new EventSource(`/api/stream?${params.toString()}`);
-  state.stream.onopen = () => setStatus("Live");
-  state.stream.onerror = () => setStatus("Stream reconnecting");
-  state.stream.onmessage = (event) => {
+  const streamPath = isClaudeViewer()
+    ? window.ClaudeSessionViewer.streamPath(state)
+    : `/api/stream?${new URLSearchParams({ date: state.selectedDate, file: state.selectedFile, offset: String(state.offset) })}`;
+  const stream = new EventSource(streamPath);
+  state.stream = stream;
+  stream.onopen = () => {
+    if (state.stream === stream) {
+      setStatus("Live");
+    }
+  };
+  stream.onerror = () => {
+    if (state.stream === stream) {
+      setStatus("Stream reconnecting");
+    }
+  };
+  stream.onmessage = (event) => {
+    if (state.stream !== stream) {
+      return;
+    }
     const item = JSON.parse(event.data);
     state.records.push(item);
     state.offset = Math.max(state.offset, item.nextOffset || item.offset || state.offset);
     if (state.viewMode === "turns") {
       updateLiveTurn(item);
       const payloadType = getByPath(item.record || {}, "payload.type");
-      if (["task_started", "task_complete", "turn_aborted"].includes(payloadType)) {
+      const boundary = isClaudeViewer()
+        ? window.ClaudeSessionViewer.isTurnBoundary(item)
+        : ["task_started", "task_complete", "turn_aborted"].includes(payloadType);
+      if (boundary) {
         refreshTurns();
       } else {
         renderEvents({ preserveScroll: !state.autoScroll });
@@ -334,11 +520,26 @@ function openStream() {
 }
 
 async function refreshTurns() {
-  if (!state.selectedDate || !state.selectedFile) {
+  const hasNavigation = isClaudeViewer() ? state.selectedProject : state.selectedDate;
+  if (!hasNavigation || !state.selectedFile) {
     return;
   }
-  const url = `/api/turns?date=${encodeURIComponent(state.selectedDate)}&file=${encodeURIComponent(state.selectedFile)}`;
+  const url = isClaudeViewer()
+    ? window.ClaudeSessionViewer.turnsPath(state)
+    : `/api/turns?date=${encodeURIComponent(state.selectedDate)}&file=${encodeURIComponent(state.selectedFile)}`;
+  const generation = state.loadGeneration;
+  const viewer = state.viewer;
+  const selectedProject = state.selectedProject;
+  const selectedDate = state.selectedDate;
+  const selectedFile = state.selectedFile;
   const data = await api(url);
+  if (!isCurrentLoad(generation)
+    || state.viewer !== viewer
+    || state.selectedProject !== selectedProject
+    || state.selectedDate !== selectedDate
+    || state.selectedFile !== selectedFile) {
+    return;
+  }
   const selected = state.selectedTurnId;
   const previousEnds = new Map(state.turns.map((turn) => [turn.id, turn.endOffset]));
   state.turns = data.turns || [];
@@ -367,17 +568,19 @@ function closeStream() {
 }
 
 function renderFiles() {
-  el.dateStatus.textContent = `${state.selectedDate || "No date"} · ${state.files.length} files`;
+  el.dateStatus.textContent = isClaudeViewer()
+    ? `${state.projects.length} projects · ${state.files.length} sessions`
+    : `${state.selectedDate || "No date"} · ${state.files.length} files`;
   if (!state.files.length) {
-    el.fileList.innerHTML = `<div class="empty-state">No rollout JSONL files</div>`;
+    el.fileList.innerHTML = `<div class="empty-state">${isClaudeViewer() ? "No Claude sessions" : "No rollout JSONL files"}</div>`;
     return;
   }
   el.fileList.innerHTML = state.files.map((file) => {
     const active = file.name === state.selectedFile ? " active" : "";
     return `
       <button class="file-button${active}" type="button" data-file="${escapeAttr(file.name)}">
-        <div class="file-name">${escapeHtml(formatFileName(file.name))}</div>
-        <div class="file-id">${escapeHtml(formatFileId(file.name))}</div>
+        <div class="file-name">${escapeHtml(isClaudeViewer() ? window.ClaudeSessionViewer.fileTitle(file) : formatFileName(file.name))}</div>
+        <div class="file-id">${escapeHtml(isClaudeViewer() ? window.ClaudeSessionViewer.fileId(file.name) : formatFileId(file.name))}</div>
         <div class="file-meta"><span>${formatBytes(file.size)}</span><span>${formatTimeOnly(file.modifiedAt)}</span></div>
       </button>
     `;
@@ -436,7 +639,7 @@ function renderTurns(options = {}) {
         <div class="turn-ledger" role="list" aria-label="Conversation turns">
           <div class="turn-ledger-head" aria-hidden="true">
             <span>Turn</span><span>Time</span><span>User request</span><span class="col-duration">Duration</span>
-            <span>Events</span><span>Token Δ</span><span class="col-tools">Tools</span><span class="col-status">Status</span>
+            <span>Events</span><span>${isClaudeViewer() ? "Tokens" : "Token Δ"}</span><span class="col-tools">Tools</span><span class="col-status">Status</span>
             <span>Context composition</span><span aria-hidden="true"></span>
           </div>
           ${turns.map(renderCompactTurn).join("")}
@@ -464,7 +667,7 @@ function renderCompactTurn(turn) {
         <span class="turn-request">${escapeHtml(turn.userMessage || "No user message captured")}</span>
         <span class="col-duration">${escapeHtml(formatDuration(turn.durationMs))}</span>
         <span>${formatNumber(turn.eventCount)}</span>
-        <span>${escapeHtml(formatDelta(turn.tokenDelta?.total_tokens))}</span>
+        <span>${escapeHtml(formatTurnTokens(turn.tokenDelta?.total_tokens))}</span>
         <span class="col-tools">${formatNumber(turn.toolCount)}</span>
         <span class="col-status"><span class="turn-status ${escapeAttr(turn.status)}">${escapeHtml(turn.status)}</span></span>
         <span>${renderCompositionBar(turn)}</span>
@@ -483,7 +686,7 @@ function renderNarrativeTurn(turn) {
       <button class="turn-narrative-header" type="button" data-select-turn="${escapeAttr(turn.id)}" aria-expanded="${expanded}">
         <span class="turn-index">${escapeHtml(turnNumber(turn))}</span>
         <span class="turn-request">${escapeHtml(turn.userMessage || "No user message captured")}</span>
-        <span class="turn-narrative-meta">${escapeHtml(formatShortTime(turn.startTime))} · ${escapeHtml(formatDuration(turn.durationMs))} · ${formatNumber(turn.eventCount)} events · ${escapeHtml(formatDelta(turn.tokenDelta?.total_tokens))}</span>
+        <span class="turn-narrative-meta">${escapeHtml(formatShortTime(turn.startTime))} · ${escapeHtml(formatDuration(turn.durationMs))} · ${formatNumber(turn.eventCount)} events · ${escapeHtml(formatTurnTokens(turn.tokenDelta?.total_tokens))}</span>
         <span class="turn-chevron" aria-hidden="true">${expanded ? "−" : "+"}</span>
       </button>
       <div class="turn-narrative-composition">${renderCompositionBar(turn, true)}</div>
@@ -546,7 +749,7 @@ function renderTurnOverview() {
     <div class="overview-summary">
       <strong>Session overview</strong>
       <span>${formatNumber(turns.length)} turns</span>
-      <span>${escapeHtml(formatDelta(totalTokens))} token delta</span>
+      <span>${escapeHtml(formatTurnTokens(totalTokens))} ${isClaudeViewer() ? "tokens" : "token delta"}</span>
       <div class="metric-switch" aria-label="Composition measure">
         <span>Measured by</span>
         <button type="button" data-composition-metric="bytes" class="${state.compositionMetric === "bytes" ? "active" : ""}">Payload size</button>
@@ -602,22 +805,28 @@ function turnNumber(turn) {
 
 function buildSessionHandoff() {
   const chronological = [...state.turns].reverse();
-  const selectedIndex = chronological.findIndex((turn) => turn.id === state.selectedTurnId);
-  const endIndex = selectedIndex >= 0 ? selectedIndex : chronological.length - 1;
-  const included = chronological.slice(0, endIndex + 1);
+  const included = chronological;
+  const endIndex = included.length - 1;
   const current = included.at(-1) || null;
   const objective = handoffObjective(included);
   const tools = [...new Set(included.flatMap((turn) => turn.toolNames || []))];
   const cwd = state.session?.cwd || "Unknown — ask the user or inspect the target environment";
-  const sessionId = state.session?.id || formatFileId(state.selectedFile) || "Unknown";
-  const scope = current ? `${turnLabelForIndex(endIndex)} (${included.length} turns)` : "No captured turns";
+  const sessionId = state.session?.id
+    || (isClaudeViewer() ? window.ClaudeSessionViewer.fileId(state.selectedFile) : formatFileId(state.selectedFile))
+    || "Unknown";
+  const provider = isClaudeViewer() ? "Claude" : "Codex";
+  const scope = current
+    ? `全部 T01–${turnLabelForIndex(endIndex)} (${included.length} turns)`
+    : "No captured turns";
   const turnSummaries = included.map((turn, index) => {
+    const userMessage = turn.userMessageFull || turn.userMessage || "未捕获";
+    const assistantMessage = turn.assistantMessageFull || turn.assistantMessage;
     const lines = [
       `### ${turnLabelForIndex(index)} · ${formatTimeOnly(turn.startTime)} · ${turn.status}`,
-      `- 用户请求：${handoffText(turn.userMessage || "未捕获")}`,
+      `#### 用户请求\n${handoffBlock(userMessage)}`,
     ];
-    if (turn.assistantMessage) {
-      lines.push(`- Agent 结果：${handoffText(turn.assistantMessage)}`);
+    if (assistantMessage) {
+      lines.push(`#### Agent 结果\n${handoffBlock(assistantMessage)}`);
     }
     if (turn.toolNames?.length) {
       lines.push(`- 使用工具：${turn.toolNames.join(", ")}`);
@@ -625,12 +834,14 @@ function buildSessionHandoff() {
     return lines.join("\n");
   }).join("\n\n");
 
-  return `请接手并继续处理以下任务。此内容可独立使用，不依赖原会话。\n\n目标：\n- ${handoffText(objective || "根据下方 Turn 摘要确认下一步")}`
-    + `\n\n工作区：\n- cwd: ${cwd}\n- session_id: ${sessionId}\n- source_file: ${state.selectedFile || "Unknown"}`
-    + `\n\n交接范围：\n- 截止 ${scope}`
-    + `\n\n当前状态：\n- ${handoffText(current?.assistantMessage || "当前 Turn 尚未捕获 Agent 最终回复，请先检查工作区现状。")}`
+  const currentState = current?.assistantMessageFull || current?.assistantMessage
+    || "当前 Turn 尚未捕获 Agent 最终回复，请先检查工作区现状。";
+  return `请接手并继续处理以下任务。此内容可独立使用，不依赖原会话。\n\n目标：\n- ${handoffInline(objective || "根据下方 Turn 摘要确认下一步", 1200)}`
+    + `\n\n工作区：\n- viewer: ${provider}\n- cwd: ${cwd}\n- session_id: ${sessionId}\n- source_file: ${state.selectedFile || "Unknown"}`
+    + `\n\n交接范围：\n- ${scope}`
+    + `\n\n当前状态：\n\n${handoffBlock(currentState)}`
     + `\n- 已使用工具：${tools.length ? tools.join(", ") : "未记录"}`
-    + `\n\nTurn 摘要：\n\n${turnSummaries || "无可用 Turn 摘要。"}`
+    + `\n\nTurn 上下文：\n\n${turnSummaries || "无可用 Turn 上下文。"}`
     + `\n\n下一步：\n1. 先检查 cwd 中的当前文件和运行状态。\n2. 从“目标”和最后一个 Turn 继续，不要重复已明确完成的工作。`
     + `\n\n注意事项：\n- 此交接包不包含 Git state、系统/开发者指令、内部 reasoning、密钥或完整原始工具日志。\n- 事实与推断请重新区分；历史路径、URL 和运行状态可能已经变化。`
     + `\n\n期望输出：\n- 直接推进当前目标，并报告完成内容、验证结果和仍需决策的问题。`;
@@ -640,23 +851,79 @@ function turnLabelForIndex(index) {
   return `T${String(index + 1).padStart(2, "0")}`;
 }
 
-function handoffText(value) {
-  return oneLine(String(value || ""), 600);
+function handoffInline(value, limit = 1200) {
+  return oneLine(String(value || ""), limit);
+}
+
+function handoffBlock(value) {
+  return String(value || "").replaceAll("\r\n", "\n").trim();
 }
 
 function handoffObjective(turns) {
   const acknowledgment = /^(好|好的|可以|行|嗯|ok|okay|执行|继续|做吧|就这样|没问题)[。！!]*$/i;
   for (let index = turns.length - 1; index >= 0; index -= 1) {
-    const message = String(turns[index]?.userMessage || "").trim();
+    const message = String(turns[index]?.userMessageFull || turns[index]?.userMessage || "").trim();
     if (message && !acknowledgment.test(message)) {
-      return message;
+      return extractHandoffObjective(message);
     }
   }
-  return turns.at(-1)?.userMessage || "";
+  const latest = turns.at(-1);
+  return extractHandoffObjective(latest?.userMessageFull || latest?.userMessage || "");
+}
+
+function extractHandoffObjective(value) {
+  const message = String(value || "").trim();
+  const wrapper = "请接手并继续处理以下任务。此内容可独立使用，不依赖原会话。";
+  const wrapperIndex = message.indexOf(wrapper);
+  const prefix = wrapperIndex > 0 ? message.slice(0, wrapperIndex).trim() : "";
+  if (prefix) {
+    return prefix;
+  }
+  if (wrapperIndex !== 0) {
+    return message;
+  }
+  const objective = message.match(/(?:^|\n)目标：\s*\n([\s\S]*?)(?=\n\n[^\n]+：(?:\n|$)|$)/)?.[1];
+  return objective?.replace(/^[-*]\s*/gm, "").trim() || message;
 }
 
 function updateLiveTurn(item) {
   const record = item.record || {};
+  if (isClaudeViewer()) {
+    if (window.ClaudeSessionViewer.isTurnBoundary(item)) {
+      return;
+    }
+    const turn = state.turns.find((candidate) => candidate.status === "live");
+    if (!turn) {
+      return;
+    }
+    turn.eventCount += 1;
+    turn.endLine = item.lineNo;
+    turn.endOffset = item.nextOffset;
+    turn.endTime = record.timestamp || turn.endTime;
+    const categories = recordCategories(item);
+    const bytes = new TextEncoder().encode(item.rawLine || JSON.stringify(record)).length;
+    for (const category of categories) {
+      if (!turn.composition?.[category]) {
+        continue;
+      }
+      turn.composition[category].events += 1;
+      turn.composition[category].bytes += Math.round(bytes / Math.max(1, categories.length));
+    }
+    if (categories.length) {
+      turn.contentEventCount += 1;
+    }
+    for (const toolName of item.viewer?.toolNames || []) {
+      if (!turn.toolNames.includes(toolName)) {
+        turn.toolNames.push(toolName);
+      }
+    }
+    turn.toolCount += Number(item.viewer?.toolCount || 0);
+    if (item.viewer?.assistantMessage) {
+      turn.assistantMessage = item.viewer.assistantMessage;
+      turn.assistantMessageFull = item.viewer.assistantMessageFull || item.viewer.assistantMessage;
+    }
+    return;
+  }
   const payloadType = getByPath(record, "payload.type");
   const turnId = getByPath(record, "payload.turn_id") || getByPath(record, "turn_id");
   if (payloadType === "task_started") {
@@ -677,6 +944,14 @@ function updateLiveTurn(item) {
     turn.composition[category].events += 1;
     turn.composition[category].bytes += new TextEncoder().encode(item.rawLine || JSON.stringify(record)).length;
   }
+}
+
+function recordCategories(item) {
+  if (isClaudeViewer()) {
+    return window.ClaudeSessionViewer.categories(item);
+  }
+  const category = turnCategory(item?.record || {});
+  return category ? [category] : [];
 }
 
 function turnCategory(record) {
@@ -815,9 +1090,13 @@ function turnRecordsForInspector(turn) {
   if (!records) {
     return null;
   }
-  return state.turnPhaseFilter
-    ? records.filter((item) => phaseMatchesRecord(state.turnPhaseFilter, item.record || {}))
-    : records;
+  if (!state.turnPhaseFilter) {
+    return records;
+  }
+  const filtered = records.filter((item) => phaseMatchesRecord(state.turnPhaseFilter, item));
+  return isClaudeViewer()
+    ? filtered.map((item) => window.ClaudeSessionViewer.projectPhaseItem(item, state.turnPhaseFilter))
+    : filtered;
 }
 
 function turnPhaseLabel(phase) {
@@ -853,8 +1132,18 @@ function renderTurnPhaseSummaryInspector(turn) {
   let toolOutputs = 0;
   for (const item of records) {
     const record = item.record || {};
-    const payloadType = String(getByPath(record, "payload.type") || record.type || "unknown");
+    const payloadType = String(isClaudeViewer()
+      ? (item.viewer?.kind || record.type || "unknown")
+      : (getByPath(record, "payload.type") || record.type || "unknown"));
     eventTypes.set(payloadType, (eventTypes.get(payloadType) || 0) + 1);
+    if (isClaudeViewer()) {
+      toolCalls += Number(item.viewer?.toolCount || 0);
+      toolOutputs += Number(item.viewer?.toolResultCount || 0);
+      for (const toolName of item.viewer?.toolNames || []) {
+        tools.add(String(toolName));
+      }
+      continue;
+    }
     if (["function_call", "custom_tool_call", "tool_search_call"].includes(payloadType)) {
       toolCalls += 1;
       const toolName = getByPath(record, "payload.name") || getByPath(record, "payload.tool_name");
@@ -914,9 +1203,7 @@ function renderTurnPhaseRelatedInspector(turn) {
   }
   const groups = new Map();
   for (const item of records) {
-    const record = item.record || {};
-    const callId = getByPath(record, "payload.call_id") || getByPath(record, "call_id");
-    const key = callId ? `call_id ${callId}` : (getByPath(record, "payload.type") || record.type || "other");
+    const key = phaseRelationKey(item);
     if (!groups.has(key)) {
       groups.set(key, []);
     }
@@ -933,6 +1220,29 @@ function renderTurnPhaseRelatedInspector(turn) {
       `).join("") || `<div class="empty-state">No related records in this phase.</div>`}
     </div>
   `;
+}
+
+function phaseRelationKey(item) {
+  const record = item.record || {};
+  if (isClaudeViewer()) {
+    const toolIds = [
+      ...relationValueList(getByPath(record, "message.content.id")),
+      ...relationValueList(getByPath(record, "message.content.tool_use_id")),
+    ];
+    if (toolIds.length) {
+      return `tool ${toolIds.join(", ")}`;
+    }
+    return item.viewer?.label || record.type || "other";
+  }
+  const callId = getByPath(record, "payload.call_id") || getByPath(record, "call_id");
+  return callId ? `call_id ${callId}` : (getByPath(record, "payload.type") || record.type || "other");
+}
+
+function relationValueList(value) {
+  if (Array.isArray(value)) {
+    return value.flatMap(relationValueList);
+  }
+  return value === undefined || value === null || value === "" ? [] : [String(value)];
 }
 
 function renderTurnStructuredInspector(turn) {
@@ -993,13 +1303,14 @@ function renderTurnSummaryInspector(turn) {
       </div>
     </section>
     <section class="inspector-section">
-      <div class="inspector-section-title">Token usage <span>cumulative delta</span></div>
+      <div class="inspector-section-title">Token usage <span>${isClaudeViewer() ? "summed response usage" : "cumulative delta"}</span></div>
       ${renderMetricRow("Input", usage.input_tokens)}
-      ${renderMetricRow("Cached input", usage.cached_input_tokens)}
+      ${renderMetricRow(isClaudeViewer() ? "Cache read" : "Cached input", usage.cached_input_tokens)}
+      ${renderMetricRow("Cache write", usage.cache_write_input_tokens)}
       ${renderMetricRow("Output", usage.output_tokens)}
-      ${renderMetricRow("Reasoning", usage.reasoning_output_tokens)}
-      ${renderMetricRow("Net token delta", usage.total_tokens, true)}
-      <p class="metric-note">Token deltas are independent of payload composition.</p>
+      ${isClaudeViewer() ? "" : renderMetricRow("Reasoning", usage.reasoning_output_tokens)}
+      ${renderMetricRow(isClaudeViewer() ? "Total tokens" : "Net token delta", usage.total_tokens, true)}
+      <p class="metric-note">${isClaudeViewer() ? "Claude usage is summed across assistant responses in this turn." : "Token deltas are independent of payload composition."}</p>
     </section>
     <section class="inspector-section">
       <div class="inspector-section-title">Turn details</div>
@@ -1076,13 +1387,27 @@ async function loadTurnRecords(turn) {
   if (state.turnRecords.has(turn.id)) {
     return state.turnRecords.get(turn.id);
   }
-  const params = new URLSearchParams({
-    date: state.selectedDate,
-    file: state.selectedFile,
-    start: String(turn.startOffset),
-    end: String(turn.endOffset),
-  });
-  const data = await api(`/api/turn-events?${params.toString()}`);
+  const url = isClaudeViewer()
+    ? window.ClaudeSessionViewer.turnEventsPath(state, turn)
+    : `/api/turn-events?${new URLSearchParams({
+      date: state.selectedDate,
+      file: state.selectedFile,
+      start: String(turn.startOffset),
+      end: String(turn.endOffset),
+    })}`;
+  const generation = state.loadGeneration;
+  const viewer = state.viewer;
+  const selectedProject = state.selectedProject;
+  const selectedDate = state.selectedDate;
+  const selectedFile = state.selectedFile;
+  const data = await api(url);
+  if (!isCurrentLoad(generation)
+    || state.viewer !== viewer
+    || state.selectedProject !== selectedProject
+    || state.selectedDate !== selectedDate
+    || state.selectedFile !== selectedFile) {
+    return null;
+  }
   const records = data.records || [];
   state.turnRecords.set(turn.id, records);
   const merged = new Map(state.records.map((item) => [`${item.offset}:${item.lineNo}`, item]));
@@ -1093,15 +1418,15 @@ async function loadTurnRecords(turn) {
   return records;
 }
 
-function phaseMatchesRecord(phase, record) {
-  const category = turnCategory(record);
+function phaseMatchesRecord(phase, item) {
+  const categories = recordCategories(item);
   if (phase === "input") {
-    return ["requirement", "system", "retrieved"].includes(category);
+    return categories.some((category) => ["requirement", "system", "retrieved"].includes(category));
   }
   if (phase === "assistant") {
-    return category === "assistant";
+    return categories.includes("assistant");
   }
-  return category === phase;
+  return categories.includes(phase);
 }
 
 function renderInspectorTabs() {
@@ -1118,7 +1443,10 @@ function renderSummaryInspector(item, semantic) {
     ["timestamp", record.timestamp],
     ["type", record.type],
     ["payload.type", getByPath(record, "payload.type")],
-    ["role", getByPath(record, "payload.role")],
+    ["role", getByPath(record, "payload.role") || getByPath(record, "message.role")],
+    ["model", getByPath(record, "message.model")],
+    ["uuid", getByPath(record, "uuid")],
+    ["parentUuid", getByPath(record, "parentUuid")],
     ["call_id", getByPath(record, "payload.call_id") || getByPath(record, "call_id")],
     ["turn_id", getByPath(record, "payload.turn_id") || getByPath(record, "turn_id")],
     ["offset", item.offset],
@@ -1156,7 +1484,7 @@ function renderRawInspector(item) {
 function renderRelatedInspector(item) {
   const related = findRelatedEvents(item);
   if (!related.length) {
-    return `<div class="empty-state">No related events found by call_id or turn_id.</div>`;
+    return `<div class="empty-state">No related events found by tool, call, turn, or parent IDs.</div>`;
   }
   return `
     <div class="related-list">
@@ -1207,6 +1535,12 @@ function eventFields(record) {
 function describeEvent(item, record) {
   if (item.error) {
     return { kind: "errors", label: "Parse Error", summary: item.error };
+  }
+  if (isClaudeViewer()) {
+    const semantic = window.ClaudeSessionViewer.describeEvent(item);
+    if (semantic) {
+      return semantic;
+    }
   }
 
   const type = record.type || "";
@@ -1529,13 +1863,23 @@ function findRelatedEvents(item) {
 
 function relationIds(record) {
   const ids = new Set();
-  for (const path of ["call_id", "turn_id", "payload.call_id", "payload.turn_id"]) {
-    const value = getByPath(record, path);
-    if (value) {
-      ids.add(String(value));
-    }
+  for (const path of [
+    "call_id", "turn_id", "payload.call_id", "payload.turn_id",
+    "uuid", "parentUuid", "message.id", "message.content.id", "message.content.tool_use_id",
+  ]) {
+    addRelationValues(ids, getByPath(record, path));
   }
   return ids;
+}
+
+function addRelationValues(ids, value) {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      addRelationValues(ids, item);
+    }
+  } else if (value !== undefined && value !== null && value !== "") {
+    ids.add(String(value));
+  }
 }
 
 function formatTimestamp(value) {
@@ -1582,6 +1926,10 @@ function formatNumber(value) {
 function formatDelta(value) {
   const number = Number(value || 0);
   return `${number >= 0 ? "+" : ""}${formatNumber(number)}`;
+}
+
+function formatTurnTokens(value) {
+  return isClaudeViewer() ? formatNumber(value) : formatDelta(value);
 }
 
 function summarizeRecord(record) {
@@ -1671,6 +2019,10 @@ function formatTimeOnly(value) {
 
 function setStatus(text) {
   el.streamStatus.textContent = text;
+}
+
+function reportLoadError(error) {
+  setStatus(`Load failed · ${error.message}`);
 }
 
 function scrollIfNeeded() {
@@ -1805,7 +2157,7 @@ function renderTailMenu() {
     `;
   }).join("");
   const command = tailCommand(state.tailVariant);
-  el.copyTailButton.title = command || "Select a rollout file to build a tail command";
+  el.copyTailButton.title = command || "Select a session file to build a tail command";
 }
 
 function setTailMenuOpen(open) {
@@ -1818,7 +2170,7 @@ async function copyTailCommand(key) {
   const variant = tailVariant(key);
   const command = tailCommand(variant.key);
   if (!command) {
-    setStatus("No rollout file selected");
+    setStatus("No session file selected");
     return;
   }
   try {
@@ -1902,7 +2254,11 @@ el.fileList.addEventListener("click", async (event) => {
     return;
   }
   state.selectedFile = button.dataset.file;
-  await loadInitial();
+  try {
+    await loadInitial();
+  } catch (error) {
+    reportLoadError(error);
+  }
 });
 
 el.viewTabs.addEventListener("click", (event) => {
@@ -2076,6 +2432,9 @@ el.inspectorContent.addEventListener("click", (event) => {
     const turn = state.turns.find((candidate) => candidate.id === openTurn.dataset.openTurnEvents);
     if (turn) {
       loadTurnRecords(turn).then((records) => {
+        if (records === null) {
+          return;
+        }
         state.viewMode = "events";
         state.selectedLineNo = records[0]?.lineNo || null;
         state.query = "";
@@ -2133,11 +2492,40 @@ function handleInspectorTreeAction(action) {
 
 el.dateInput.addEventListener("change", async () => {
   state.selectedDate = el.dateInput.value;
-  await loadFiles();
+  try {
+    await loadFiles();
+  } catch (error) {
+    reportLoadError(error);
+  }
+});
+
+el.viewerSwitchButton.addEventListener("click", async () => {
+  setViewerPreference(isClaudeViewer() ? "codex" : "claude");
+  resetViewerFilters();
+  try {
+    await loadViewer();
+  } catch (error) {
+    el.rootPath.textContent = error.message;
+    setStatus("Load failed");
+    el.eventStream.innerHTML = `<div class="empty-state">${escapeHtml(error.message)}</div>`;
+  }
+});
+
+el.claudeProjectSelect.addEventListener("change", async () => {
+  state.selectedProject = el.claudeProjectSelect.value;
+  try {
+    await loadClaudeSessions();
+  } catch (error) {
+    reportLoadError(error);
+  }
 });
 
 el.refreshButton.addEventListener("click", async () => {
-  await Promise.all([loadDates(), loadUpdateStatus({ force: true }).catch(() => null)]);
+  try {
+    await Promise.all([loadViewer(), loadUpdateStatus({ force: true }).catch(() => null)]);
+  } catch (error) {
+    reportLoadError(error);
+  }
 });
 
 el.updateButton.addEventListener("click", requestUpdate);
@@ -2172,6 +2560,7 @@ async function copyText(text, statusText = "Copied") {
   setStatus(statusText);
 }
 
+syncViewerChrome();
 setInspectorWidth(state.inspectorWidth, false);
 initResizableInspector();
 renderViewMode();
@@ -2189,7 +2578,7 @@ setInterval(() => {
   loadUpdateStatus().catch(() => {});
 }, 30 * 60 * 1000);
 
-loadDates().catch((error) => {
+loadViewer().catch((error) => {
   el.rootPath.textContent = error.message;
   setStatus("Load failed");
   el.eventStream.innerHTML = `<div class="empty-state">${escapeHtml(error.message)}</div>`;

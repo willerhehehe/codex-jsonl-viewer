@@ -1,7 +1,7 @@
 {
   "name": "codex-jsonl-viewer",
   "version": "0.2.2",
-  "description": "Local browser UI for following and inspecting Codex session JSONL files.",
+  "description": "Local browser UI for following and inspecting Codex and Claude Code session JSONL files.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -22,8 +22,8 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --test tests/node_server.test.js",
-    "test:node": "node --test tests/node_server.test.js",
+    "test": "node --test tests/*.test.js",
+    "test:node": "node --test tests/*.test.js",
     "release:patch": "node scripts/release.js patch",
     "release:minor": "node scripts/release.js minor",
     "release:major": "node scripts/release.js major"

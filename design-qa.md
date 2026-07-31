@@ -95,3 +95,54 @@
 - P3: 3 documented residuals
 
 final result: passed
+
+---
+
+# Design QA — Context Explorer identity header
+
+## Source of truth
+
+- Selected visual direction: `/Users/willer/.codex/generated_images/019fb233-a1ae-7991-9722-118ea62aaf3e/exec-50c1dbd4-e1e5-42e2-9723-741f26e59388.png` (2172 × 724).
+- Approved copy override: replace `Session Viewer` with `Context Explorer`; render the application version as quiet, borderless metadata.
+- Desktop implementation: `/private/tmp/context-explorer-codex-2048.png` (2048 × 1024, CSS viewport 2048 × 1024, device pixel ratio 1).
+- Claude state: `/private/tmp/context-explorer-claude-2048.png` (2048 × 1024, CSS viewport 2048 × 1024, device pixel ratio 1).
+- Responsive captures: `/private/tmp/context-explorer-codex-800.png` (800 × 900) and `/private/tmp/context-explorer-codex-360-fixed.png` (360 × 800), device pixel ratio 1.
+- State: light theme, both Codex and Claude providers, version `v0.2.2`, real local session roots.
+
+## Combined comparison evidence
+
+- Focused source/implementation comparison: `/private/tmp/context-explorer-header-comparison.png` (760 × 82). The source crop and implementation crop are normalized to the same 380 × 82 region before being joined side by side.
+- A full-view comparison was not useful because the selected source is a standalone header concept rather than a complete application screen. The focused comparison contains the complete visual target: provider control, divider, product title, version, path, and bottom rule.
+
+## Comparison history
+
+1. Initial implementation reproduced the selected horizontal hierarchy and applied the approved `Context Explorer` copy override.
+2. P2 color finding: the first borderless version color and inactive provider text did not meet small-text contrast targets.
+3. Fix: version text now uses `#667085`; inactive provider text uses `#475467`.
+4. P2 responsive finding: at 360px, Viewer tabs and Date/Refresh controls could overlap on the second header row.
+5. Fix: at 420px and below, tabs and actions use independent full-width rows; the provider control compresses to 128px, the divider hides, and the product/version typography steps down.
+6. Post-fix evidence: the 360px body width and brand row both remain within the 360px viewport, with no header control overlap.
+
+## Required fidelity surfaces
+
+- Fonts and typography: passed. The provider labels and product name use the existing sans stack with distinct 700/750 weights; version and path retain the technical mono voice. The approved product-name override is intentional.
+- Spacing and layout rhythm: passed. Provider, divider, product title, version, and path preserve the selected two-line hierarchy. The 2048px brand row is 332px wide with equal client and scroll widths.
+- Colors and visual tokens: passed. Codex blue and Claude brown remain provider-specific; inactive labels and version metadata meet the intended readable-muted hierarchy.
+- Image quality and asset fidelity: passed. The header contains no raster imagery or new custom iconography. The existing favicon remains the only brand asset.
+- Copy and content: passed. `Context Explorer` is consistent in the visible heading, browser title, update confirmation, CLI banner, README heading, and favicon accessible label.
+- Interactions and accessibility: passed. The source switch was exercised Codex → Claude → Codex; URL, session root, `data-viewer`, and `aria-checked` synchronized in both states. The heading is a visible level-one heading, the switch has a stable accessible name, and the dynamic version includes its value in the accessible label.
+- Responsiveness: passed for 2048px, 800px, and 360px. At 360px the header grows to three rows rather than overlapping controls.
+
+## Functional verification
+
+- `node --check static/app.js`: passed.
+- `npm test`: 30/30 passed outside the restricted listener sandbox.
+- `git diff --check`: passed before the final report update.
+- Browser console after provider switching and responsive checks: 0 errors.
+
+## Findings
+
+- No actionable P0, P1, or P2 findings remain.
+- P3: the update-available action was not visible in the current registry state; its compact rectangular styling was reviewed from CSS rather than a live update state.
+
+final result: passed

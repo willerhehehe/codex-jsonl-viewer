@@ -48,6 +48,7 @@ test("CLI defaults to the Codex sessions root and local URL port", () => {
   const options = cli.parseArgs([]);
 
   assert.equal(options.root, "~/.codex/sessions");
+  assert.equal(options.claudeRoot, "~/.claude/projects");
   assert.equal(options.host, "127.0.0.1");
   assert.equal(options.port, 8765);
   assert.equal(options.open, false);
@@ -57,6 +58,7 @@ test("CLI defaults to the Codex sessions root and local URL port", () => {
 test("CLI preserves runtime arguments when building global and npx restarts", () => {
   const options = {
     root: "/tmp/codex sessions",
+    claudeRoot: "/tmp/claude projects",
     host: "127.0.0.1",
     port: 9876,
     open: false,
@@ -74,6 +76,7 @@ test("CLI preserves runtime arguments when building global and npx restarts", ()
   assert.deepEqual(globalSpec.args, [
     "/tmp/viewer.js",
     "--root", "/tmp/codex sessions",
+    "--claude-root", "/tmp/claude projects",
     "--host", "127.0.0.1",
     "--port", "9876",
     "--no-open",
@@ -187,7 +190,7 @@ test("CLI strict port reports a busy port instead of falling back", async () => 
     process.exitCode = 0;
 
     assert.equal(viewer.listening, false);
-    assert.match(errorOutput.text(), /Failed to start Codex Session Viewer: listen EADDRINUSE/);
+    assert.match(errorOutput.text(), /Failed to start Context Explorer: listen EADDRINUSE/);
   } finally {
     if (viewer && viewer.listening) {
       await close(viewer);
@@ -293,6 +296,36 @@ test("summarizeSessionTurns groups records, composition, and cumulative token de
   }
 });
 
+test("Codex turn summaries retain full handoff messages while keeping compact previews", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-session-viewer-"));
+  const file = path.join(root, "rollout-long-turn.jsonl");
+  const userMessage = `First request line\n${"u".repeat(900)}\nLast request line`;
+  const assistantMessage = `First answer line\n${"a".repeat(900)}\nLast answer line`;
+  const records = [
+    { type: "event_msg", timestamp: "2026-05-09T10:00:00Z", payload: { type: "task_started", turn_id: "turn-long" } },
+    { type: "event_msg", timestamp: "2026-05-09T10:00:01Z", payload: { type: "user_message", message: userMessage } },
+    { type: "response_item", timestamp: "2026-05-09T10:00:02Z", payload: { type: "reasoning", text: "reasoning-secret" } },
+    { type: "response_item", timestamp: "2026-05-09T10:00:03Z", payload: { type: "function_call_output", output: "tool-output-secret" } },
+    { type: "event_msg", timestamp: "2026-05-09T10:00:04Z", payload: { type: "agent_message", message: assistantMessage } },
+    { type: "event_msg", timestamp: "2026-05-09T10:00:05Z", payload: { type: "task_complete", turn_id: "turn-long" } },
+  ];
+  try {
+    fs.writeFileSync(file, `${records.map((record) => JSON.stringify(record)).join("\n")}\n`);
+
+    const turn = server.summarizeSessionTurns(file).turns[0];
+
+    assert.equal(turn.userMessageFull, userMessage);
+    assert.equal(turn.assistantMessageFull, assistantMessage);
+    assert.match(turn.userMessage, / \.\.\.$/);
+    assert.match(turn.assistantMessage, / \.\.\.$/);
+    assert.ok(turn.userMessage.length < turn.userMessageFull.length);
+    assert.ok(turn.assistantMessage.length < turn.assistantMessageFull.length);
+    assert.doesNotMatch(JSON.stringify(turn), /reasoning-secret|tool-output-secret/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("HTTP API serves dates, initial records, and static assets", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-session-viewer-"));
   const day = path.join(root, "2026", "05", "09");
@@ -333,6 +366,7 @@ test("HTTP API serves dates, initial records, and static assets", async () => {
     const html = await getText(`${baseUrl}/`);
     const icon = await getText(`${baseUrl}/static/icon.svg`);
     const app = await getText(`${baseUrl}/static/app.js`);
+    const claudeApp = await getText(`${baseUrl}/static/claude-viewer.js`);
     const rejectedUpdate = await requestJson(`${baseUrl}/api/update`, { method: "POST" });
     const acceptedUpdate = await requestJson(`${baseUrl}/api/update`, {
       method: "POST",
@@ -345,12 +379,20 @@ test("HTTP API serves dates, initial records, and static assets", async () => {
     assert.deepEqual(dates.dates, ["2026-05-09"]);
     assert.equal(dates.root, path.resolve(root));
     assert.deepEqual(initial.records.map((item) => item.record.index), [2, 3]);
-    assert.match(html, /Codex Session Viewer/);
+    assert.match(html, /<title>Context Explorer<\/title>/);
+    assert.match(html, /<h1>Context Explorer<\/h1>/);
+    assert.match(html, /id="viewerSwitchButton"/);
+    assert.match(html, /role="switch"/);
+    assert.match(html, /aria-checked="false"/);
+    assert.match(html, /viewer-switch-codex">Codex/);
+    assert.match(html, /viewer-switch-claude">Claude/);
+    assert.doesNotMatch(html, /viewer-switch-arrows/);
     assert.match(html, /id="appVersion"/);
     assert.match(html, /id="updateButton"/);
     assert.match(html, /rel="icon"/);
     assert.match(icon, /<svg/);
     assert.match(app, /\/api\/update-status/);
+    assert.match(claudeApp, /\/api\/claude\/projects/);
     assert.equal(rejectedUpdate.status, 403);
     assert.equal(acceptedUpdate.status, 202);
     assert.equal(acceptedUpdate.body.phase, "installing");
@@ -358,6 +400,58 @@ test("HTTP API serves dates, initial records, and static assets", async () => {
   } finally {
     await close(httpd);
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("HTTP API serves independent Claude projects, sessions, turns, and event detail", async () => {
+  const codexRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-session-viewer-"));
+  const claudeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "claude-session-viewer-"));
+  const project = "-Users-willer-viewer";
+  const projectDir = path.join(claudeRoot, project);
+  fs.mkdirSync(projectDir);
+  const fileName = "11111111-1111-4111-8111-111111111111.jsonl";
+  fs.writeFileSync(
+    path.join(projectDir, fileName),
+    claudeHttpFixtureRecords().map((record) => JSON.stringify(record)).join("\n") + "\n",
+  );
+
+  const httpd = server.createHttpServer({
+    host: "127.0.0.1",
+    port: 0,
+    root: codexRoot,
+    claudeRoot,
+  });
+  try {
+    await listen(httpd);
+    const baseUrl = `http://127.0.0.1:${httpd.address().port}`;
+    const projectParam = encodeURIComponent(project);
+    const fileParam = encodeURIComponent(fileName);
+    const projects = await getJson(`${baseUrl}/api/claude/projects`);
+    const sessions = await getJson(`${baseUrl}/api/claude/sessions?project=${projectParam}`);
+    const initial = await getJson(`${baseUrl}/api/claude/initial?project=${projectParam}&file=${fileParam}&limit=20`);
+    const summary = await getJson(`${baseUrl}/api/claude/turns?project=${projectParam}&file=${fileParam}`);
+    const turn = summary.turns[0];
+    const detail = await getJson(
+      `${baseUrl}/api/claude/turn-events?project=${projectParam}&file=${fileParam}&start=${turn.startOffset}&end=${turn.endOffset}`,
+    );
+
+    assert.equal(httpd.claudeRoot, path.resolve(claudeRoot));
+    assert.deepEqual(projects.projects.map((item) => item.id), [project]);
+    assert.equal(projects.projects[0].displayName, "viewer");
+    assert.equal(sessions.sessions[0].firstPrompt, "Inspect Claude support");
+    assert.equal(initial.records[0].viewer.provider, "claude");
+    assert.equal(summary.session.source, "claude");
+    assert.equal(summary.session.cwd, "/Users/willer/viewer");
+    assert.equal(summary.turns.length, 1);
+    assert.equal(turn.userMessage, "Inspect Claude support");
+    assert.equal(turn.toolCount, 1);
+    assert.equal(turn.durationMs, 1200);
+    assert.equal(detail.records[0].viewer.boundary, "start");
+    assert.equal(detail.records.at(-1).viewer.boundary, "end");
+  } finally {
+    await close(httpd);
+    fs.rmSync(codexRoot, { recursive: true, force: true });
+    fs.rmSync(claudeRoot, { recursive: true, force: true });
   }
 });
 
@@ -417,6 +511,64 @@ function turnFixtureRecords() {
     { type: "event_msg", timestamp: "2026-05-09T10:01:01Z", payload: { type: "user_message", message: "Stop the turn" } },
     usage(170, 22, 8, 200),
     { type: "event_msg", timestamp: "2026-05-09T10:01:03Z", payload: { type: "turn_aborted", turn_id: "turn-2", duration_ms: 3000 } },
+  ];
+}
+
+function claudeHttpFixtureRecords() {
+  const common = {
+    sessionId: "claude-session",
+    cwd: "/Users/willer/viewer",
+    version: "2.1.0",
+  };
+  return [
+    {
+      ...common,
+      type: "user",
+      uuid: "prompt-1",
+      promptId: "prompt-1",
+      timestamp: "2026-07-31T02:00:00.000Z",
+      message: { role: "user", content: "Inspect Claude support" },
+    },
+    {
+      ...common,
+      type: "assistant",
+      uuid: "assistant-1",
+      timestamp: "2026-07-31T02:00:00.500Z",
+      message: {
+        role: "assistant",
+        model: "claude-opus-4-1",
+        usage: { input_tokens: 10, cache_creation_input_tokens: 2, cache_read_input_tokens: 4, output_tokens: 5 },
+        content: [
+          { type: "thinking", thinking: "Inspect the implementation" },
+          { type: "tool_use", id: "tool-1", name: "Read", input: { file_path: "src/session-server.js" } },
+        ],
+      },
+    },
+    {
+      ...common,
+      type: "user",
+      timestamp: "2026-07-31T02:00:00.800Z",
+      message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tool-1", content: "source" }] },
+    },
+    {
+      ...common,
+      type: "assistant",
+      uuid: "assistant-2",
+      timestamp: "2026-07-31T02:00:01.000Z",
+      message: {
+        role: "assistant",
+        model: "claude-opus-4-1",
+        usage: { input_tokens: 3, output_tokens: 4 },
+        content: [{ type: "text", text: "Claude support is available." }],
+      },
+    },
+    {
+      ...common,
+      type: "system",
+      subtype: "turn_duration",
+      durationMs: 1200,
+      timestamp: "2026-07-31T02:00:01.200Z",
+    },
   ];
 }
 
