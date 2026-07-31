@@ -114,6 +114,291 @@ def read_recent_jsonl(path: Path, limit: int) -> tuple[list[dict[str, object]], 
     return records, file_size
 
 
+TURN_CATEGORY_KEYS = ("requirement", "system", "retrieved", "reasoning", "tools", "assistant")
+
+
+def summarize_session_turns(path: Path) -> dict[str, object]:
+    if not path.exists():
+        return {"turns": [], "sessionContext": _empty_composition(), "session": {}, "offset": 0}
+
+    turns: list[dict[str, Any]] = []
+    session_context = _empty_composition()
+    session: dict[str, str] = {}
+    current: dict[str, Any] | None = None
+    last_usage = _empty_usage()
+    offset = 0
+    line_no = 1
+
+    with path.open("rb") as handle:
+        for line_bytes in handle:
+            line_text = line_bytes.decode("utf-8", errors="replace")
+            item = parse_jsonl_line(line_text, line_no, offset)
+            record = item.get("record") if isinstance(item.get("record"), dict) else {}
+            payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+            payload_type = payload.get("type", "")
+            turn_id = payload.get("turn_id") or record.get("turn_id") or ""
+
+            if record.get("type") == "session_meta":
+                session.update(_session_metadata(record))
+            elif record.get("type") == "turn_context" and not session.get("cwd") and payload.get("cwd"):
+                session["cwd"] = str(payload["cwd"])
+
+            if payload_type == "task_started":
+                if current:
+                    ending_usage = current.get("lastUsage") or last_usage
+                    _finalize_turn(current, turns, last_usage, "partial")
+                    last_usage = ending_usage
+                current = _create_turn_summary(turn_id, item, last_usage)
+            elif current is None and record.get("type") == "turn_context":
+                current = _create_turn_summary(turn_id, item, last_usage)
+
+            if current:
+                _add_record_to_turn(current, item)
+                if not current.get("id") and turn_id:
+                    current["id"] = str(turn_id)
+                if payload_type in ("task_complete", "turn_aborted"):
+                    status = "aborted" if payload_type == "turn_aborted" else "complete"
+                    ending_usage = current.get("lastUsage") or last_usage
+                    _finalize_turn(current, turns, last_usage, status)
+                    last_usage = ending_usage
+                    current = None
+            else:
+                _add_composition_record(session_context, item)
+                usage = _total_token_usage(record)
+                if usage:
+                    last_usage = usage
+
+            offset += len(line_bytes)
+            line_no += 1
+
+    if current:
+        _finalize_turn(current, turns, last_usage, "live")
+
+    return {
+        "turns": list(reversed(turns)),
+        "sessionContext": _finalize_composition(session_context),
+        "session": session,
+        "offset": offset,
+    }
+
+
+def _session_metadata(record: dict[str, Any]) -> dict[str, str]:
+    payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+    return {
+        "id": str(payload.get("session_id") or payload.get("id") or ""),
+        "cwd": str(payload.get("cwd") or ""),
+        "originator": str(payload.get("originator") or ""),
+        "source": str(payload.get("source") or ""),
+        "cliVersion": str(payload.get("cli_version") or ""),
+        "startedAt": str(payload.get("timestamp") or record.get("timestamp") or ""),
+    }
+
+
+def read_jsonl_range(path: Path, start_offset: int, end_offset: int) -> list[dict[str, object]]:
+    if not path.exists():
+        return []
+
+    file_size = path.stat().st_size
+    start = max(0, min(file_size, int(start_offset)))
+    end = max(start, min(file_size, int(end_offset)))
+    if end - start > 64 * 1024 * 1024:
+        raise ValueError("turn event range is too large")
+
+    records: list[dict[str, object]] = []
+    line_no = _count_lines_before(path, start) + 1
+    offset = start
+    with path.open("rb") as handle:
+        handle.seek(start)
+        remaining = end - start
+        while remaining > 0:
+            line_bytes = handle.readline(remaining)
+            if not line_bytes:
+                break
+            records.append(parse_jsonl_line(line_bytes.decode("utf-8", errors="replace"), line_no, offset))
+            offset += len(line_bytes)
+            remaining -= len(line_bytes)
+            line_no += 1
+    return records
+
+
+def _create_turn_summary(turn_id: object, item: dict[str, object], baseline_usage: dict[str, int]) -> dict[str, Any]:
+    record = item.get("record") if isinstance(item.get("record"), dict) else {}
+    timestamp = record.get("timestamp")
+    return {
+        "id": str(turn_id or f"line-{item['lineNo']}"),
+        "startLine": item["lineNo"],
+        "endLine": item["lineNo"],
+        "startOffset": item["offset"],
+        "endOffset": item["nextOffset"],
+        "startTime": timestamp,
+        "endTime": timestamp,
+        "durationMs": None,
+        "status": "live",
+        "eventCount": 0,
+        "contentEventCount": 0,
+        "toolCount": 0,
+        "toolNames": [],
+        "userMessage": "",
+        "userMessagePriority": 0,
+        "assistantMessage": "",
+        "assistantMessagePriority": 0,
+        "composition": _empty_composition(),
+        "baselineUsage": dict(baseline_usage),
+        "lastUsage": None,
+        "tokenDelta": _empty_usage(),
+    }
+
+
+def _add_record_to_turn(turn: dict[str, Any], item: dict[str, object]) -> None:
+    record = item.get("record") if isinstance(item.get("record"), dict) else {}
+    payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+    payload_type = payload.get("type", "")
+    role = payload.get("role", "")
+
+    turn["eventCount"] += 1
+    turn["endLine"] = item["lineNo"]
+    turn["endOffset"] = item["nextOffset"]
+    turn["endTime"] = record.get("timestamp") or turn["endTime"]
+    category = _add_composition_record(turn["composition"], item)
+    if category:
+        turn["contentEventCount"] += 1
+
+    if payload_type == "user_message":
+        _set_preferred_message(turn, "userMessage", _message_text(payload.get("message")), 2)
+    elif payload_type == "message" and role == "user":
+        _set_preferred_message(turn, "userMessage", _message_text(payload.get("content")), 1)
+    elif payload_type == "agent_message":
+        _set_preferred_message(turn, "assistantMessage", _message_text(payload.get("message") or payload.get("content")), 2)
+    elif payload_type == "message" and role == "assistant":
+        _set_preferred_message(turn, "assistantMessage", _message_text(payload.get("content")), 1)
+
+    if payload_type in ("function_call", "custom_tool_call", "tool_search_call"):
+        turn["toolCount"] += 1
+        tool_name = payload.get("name") or payload.get("tool_name") or payload_type.removesuffix("_call")
+        if tool_name and tool_name not in turn["toolNames"]:
+            turn["toolNames"].append(str(tool_name))
+
+    usage = _total_token_usage(record)
+    if usage:
+        turn["lastUsage"] = usage
+
+    if payload_type in ("task_complete", "turn_aborted"):
+        duration = payload.get("duration_ms")
+        if isinstance(duration, (int, float)) and duration >= 0:
+            turn["durationMs"] = duration
+
+
+def _finalize_turn(
+    turn: dict[str, Any], turns: list[dict[str, Any]], fallback_usage: dict[str, int], status: str
+) -> None:
+    turn["status"] = status
+    turn["composition"] = _finalize_composition(turn["composition"])
+    turn["lastUsage"] = turn.get("lastUsage") or fallback_usage
+    turn["tokenDelta"] = _subtract_usage(turn["lastUsage"], turn["baselineUsage"])
+    if turn.get("durationMs") is None:
+        try:
+            start = datetime.fromisoformat(str(turn["startTime"]).replace("Z", "+00:00"))
+            end = datetime.fromisoformat(str(turn["endTime"]).replace("Z", "+00:00"))
+            turn["durationMs"] = max(0, int((end - start).total_seconds() * 1000))
+        except (TypeError, ValueError):
+            pass
+    for key in ("userMessagePriority", "assistantMessagePriority", "baselineUsage", "lastUsage"):
+        turn.pop(key, None)
+    turns.append(turn)
+
+
+def _empty_composition() -> dict[str, dict[str, int]]:
+    return {key: {"bytes": 0, "events": 0} for key in TURN_CATEGORY_KEYS}
+
+
+def _add_composition_record(composition: dict[str, dict[str, int]], item: dict[str, object]) -> str | None:
+    record = item.get("record") if isinstance(item.get("record"), dict) else {}
+    category = _turn_category(record)
+    if not category:
+        return None
+    raw = item.get("rawLine") or json.dumps(record, ensure_ascii=False)
+    composition[category]["bytes"] += len(str(raw).encode("utf-8"))
+    composition[category]["events"] += 1
+    return category
+
+
+def _finalize_composition(composition: dict[str, dict[str, int]]) -> dict[str, dict[str, int]]:
+    return {
+        key: {
+            "bytes": int(composition.get(key, {}).get("bytes", 0)),
+            "events": int(composition.get(key, {}).get("events", 0)),
+        }
+        for key in TURN_CATEGORY_KEYS
+    }
+
+
+def _turn_category(record: dict[str, Any]) -> str | None:
+    record_type = record.get("type", "")
+    payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+    payload_type = payload.get("type", "")
+    role = payload.get("role", "")
+    if payload_type == "user_message" or (payload_type == "message" and role == "user"):
+        return "requirement"
+    if record_type in ("turn_context", "world_state") or (payload_type == "message" and role in ("system", "developer")):
+        return "system"
+    if payload_type in ("tool_search_output", "web_search_end", "mcp_tool_call_end"):
+        return "retrieved"
+    if payload_type in ("reasoning", "agent_reasoning"):
+        return "reasoning"
+    if payload_type in (
+        "function_call", "function_call_output", "custom_tool_call", "custom_tool_call_output",
+        "tool_search_call", "patch_apply_begin", "patch_apply_end",
+    ):
+        return "tools"
+    if payload_type == "agent_message" or (payload_type == "message" and role == "assistant"):
+        return "assistant"
+    return None
+
+
+def _set_preferred_message(turn: dict[str, Any], key: str, value: str, priority: int) -> None:
+    text = " ".join(str(value or "").split())
+    if not text:
+        return
+    if len(text) > 600:
+        text = f"{text[:600]} ..."
+    priority_key = "userMessagePriority" if key == "userMessage" else "assistantMessagePriority"
+    if not turn.get(key) or priority >= turn.get(priority_key, 0):
+        turn[key] = text
+        turn[priority_key] = priority
+
+
+def _message_text(value: Any) -> str:
+    if isinstance(value, list):
+        return " ".join(filter(None, (_message_text(item) for item in value)))
+    if isinstance(value, dict):
+        return _message_text(value.get("text") or value.get("content") or value.get("message") or "")
+    return value if isinstance(value, str) else ""
+
+
+def _total_token_usage(record: dict[str, Any]) -> dict[str, int] | None:
+    payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+    info = payload.get("info") if isinstance(payload.get("info"), dict) else {}
+    usage = info.get("total_token_usage") if isinstance(info.get("total_token_usage"), dict) else None
+    if not usage:
+        return None
+    return {key: int(usage.get(key, 0) or 0) for key in _empty_usage()}
+
+
+def _empty_usage() -> dict[str, int]:
+    return {
+        "input_tokens": 0,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 0,
+    }
+
+
+def _subtract_usage(end: dict[str, int], start: dict[str, int]) -> dict[str, int]:
+    return {key: max(0, int(end.get(key, 0)) - int(start.get(key, 0))) for key in _empty_usage()}
+
+
 class JsonlTailer:
     def __init__(self, path: Path, offset: int = 0):
         self.path = path
@@ -169,6 +454,10 @@ class JsonlViewerHandler(BaseHTTPRequestHandler):
                 self._handle_files(parsed.query)
             elif parsed.path == "/api/initial":
                 self._handle_initial(parsed.query)
+            elif parsed.path == "/api/turns":
+                self._handle_turns(parsed.query)
+            elif parsed.path == "/api/turn-events":
+                self._handle_turn_events(parsed.query)
             elif parsed.path == "/api/stream":
                 self._handle_stream(parsed.query)
             else:
@@ -238,6 +527,38 @@ class JsonlViewerHandler(BaseHTTPRequestHandler):
                 self.wfile.write(b": keepalive\n\n")
                 self.wfile.flush()
             time.sleep(0.5)
+
+    def _handle_turns(self, query: str):
+        params = _params(query)
+        date_text = _required(params, "date")
+        file_name = _required(params, "file")
+        path = safe_rollout_path(self.server.sessions_root, date_text, file_name)
+        self._write_json(
+            {
+                "date": date_text,
+                "file": file_name,
+                **summarize_session_turns(path),
+            }
+        )
+
+    def _handle_turn_events(self, query: str):
+        params = _params(query)
+        date_text = _required(params, "date")
+        file_name = _required(params, "file")
+        start = _bounded_int(params.get("start", ["0"])[0], default=0, minimum=0, maximum=10**15)
+        end = _bounded_int(params.get("end", ["0"])[0], default=0, minimum=0, maximum=10**15)
+        if end < start:
+            raise ValueError("end must be greater than or equal to start")
+        path = safe_rollout_path(self.server.sessions_root, date_text, file_name)
+        self._write_json(
+            {
+                "date": date_text,
+                "file": file_name,
+                "start": start,
+                "end": end,
+                "records": read_jsonl_range(path, start, end),
+            }
+        )
 
     def _handle_static(self, raw_path: str):
         if raw_path in ("", "/"):

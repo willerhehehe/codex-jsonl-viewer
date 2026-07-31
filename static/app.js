@@ -5,6 +5,15 @@ const MIN_INSPECTOR_WIDTH = 320;
 const MIN_STREAM_WIDTH = 520;
 const SIDEBAR_WIDTH = 255;
 const RESIZE_HANDLE_WIDTH = 8;
+const TURN_CATEGORY_KEYS = ["requirement", "system", "retrieved", "reasoning", "tools", "assistant"];
+const TURN_CATEGORY_LABELS = {
+  requirement: "Requirement / User",
+  system: "System & Policy",
+  retrieved: "Retrieved Context",
+  reasoning: "Reasoning",
+  tools: "Tools & Results",
+  assistant: "Assistant Output",
+};
 
 const DEFAULT_FIELDS = new Set([
   "timestamp",
@@ -26,6 +35,16 @@ const state = {
   files: [],
   selectedFile: "",
   records: [],
+  turns: [],
+  sessionContext: {},
+  session: {},
+  selectedTurnId: null,
+  turnRecords: new Map(),
+  expandedTurns: new Set(),
+  viewMode: "turns",
+  turnDensity: "compact",
+  compositionMetric: "bytes",
+  turnPhaseFilter: "",
   fields: new Set(DEFAULT_FIELDS),
   discoveredFields: new Set(),
   expanded: new Set(),
@@ -47,13 +66,18 @@ const state = {
 
 const el = {
   rootPath: document.querySelector("#rootPath"),
+  viewTabs: document.querySelector("#viewTabs"),
   dateInput: document.querySelector("#dateInput"),
+  copyHandoffButton: document.querySelector("#copyHandoffButton"),
   refreshButton: document.querySelector("#refreshButton"),
   dateStatus: document.querySelector("#dateStatus"),
   fileList: document.querySelector("#fileList"),
   mainLayout: document.querySelector("#mainLayout"),
   activeFile: document.querySelector("#activeFile"),
   streamStatus: document.querySelector("#streamStatus"),
+  eventControls: document.querySelector("#eventControls"),
+  turnControls: document.querySelector("#turnControls"),
+  turnOverview: document.querySelector("#turnOverview"),
   eventFilterBar: document.querySelector("#eventFilterBar"),
   eventStream: document.querySelector("#eventStream"),
   searchInput: document.querySelector("#searchInput"),
@@ -62,6 +86,7 @@ const el = {
   pauseButton: document.querySelector("#pauseButton"),
   inspectorResizeHandle: document.querySelector("#inspectorResizeHandle"),
   inspectorWideButton: document.querySelector("#inspectorWideButton"),
+  inspectorTitle: document.querySelector("#inspectorTitle"),
   inspectorStatus: document.querySelector("#inspectorStatus"),
   inspectorTabs: document.querySelector("#inspectorTabs"),
   inspectorContent: document.querySelector("#inspectorContent"),
@@ -90,8 +115,14 @@ async function loadDates() {
 async function loadFiles() {
   closeStream();
   state.records = [];
+  state.turns = [];
+  state.session = {};
+  state.turnRecords = new Map();
+  state.selectedTurnId = null;
+  state.expandedTurns = new Set();
   state.selectedLineNo = null;
   state.offset = 0;
+  el.copyHandoffButton.disabled = true;
   renderEvents();
   renderInspector();
   setStatus("Loading files");
@@ -111,14 +142,23 @@ async function loadInitial() {
   closeStream();
   const limit = 250;
   const url = `/api/initial?date=${encodeURIComponent(state.selectedDate)}&file=${encodeURIComponent(state.selectedFile)}&limit=${limit}`;
-  const data = await api(url);
+  const turnsUrl = `/api/turns?date=${encodeURIComponent(state.selectedDate)}&file=${encodeURIComponent(state.selectedFile)}`;
+  const [data, turnData] = await Promise.all([api(url), api(turnsUrl)]);
   state.records = data.records || [];
+  state.turns = turnData.turns || [];
+  state.sessionContext = turnData.sessionContext || {};
+  state.session = turnData.session || {};
+  state.turnRecords = new Map();
+  state.selectedTurnId = state.turns[0]?.id || null;
+  state.expandedTurns = new Set(state.selectedTurnId ? [state.selectedTurnId] : []);
   state.offset = data.offset || 0;
+  el.copyHandoffButton.disabled = false;
   renderFiles();
   renderEvents();
   renderInspector();
+  renderViewMode();
   el.activeFile.textContent = `${formatFileName(state.selectedFile)} · ${formatFileId(state.selectedFile)}`;
-  setStatus(`${state.records.length} recent events`);
+  setStatus(`${state.turns.length} turns · ${state.records.length} recent events`);
   if (!state.paused) {
     openStream();
   }
@@ -141,9 +181,45 @@ function openStream() {
     const item = JSON.parse(event.data);
     state.records.push(item);
     state.offset = Math.max(state.offset, item.nextOffset || item.offset || state.offset);
-    appendOrRender(item);
+    if (state.viewMode === "turns") {
+      updateLiveTurn(item);
+      const payloadType = getByPath(item.record || {}, "payload.type");
+      if (["task_started", "task_complete", "turn_aborted"].includes(payloadType)) {
+        refreshTurns();
+      } else {
+        renderEvents({ preserveScroll: !state.autoScroll });
+      }
+    } else {
+      appendOrRender(item);
+    }
     renderInspector();
   };
+}
+
+async function refreshTurns() {
+  if (!state.selectedDate || !state.selectedFile) {
+    return;
+  }
+  const url = `/api/turns?date=${encodeURIComponent(state.selectedDate)}&file=${encodeURIComponent(state.selectedFile)}`;
+  const data = await api(url);
+  const selected = state.selectedTurnId;
+  const previousEnds = new Map(state.turns.map((turn) => [turn.id, turn.endOffset]));
+  state.turns = data.turns || [];
+  state.sessionContext = data.sessionContext || {};
+  state.session = data.session || {};
+  for (const turn of state.turns) {
+    if (previousEnds.has(turn.id) && previousEnds.get(turn.id) !== turn.endOffset) {
+      state.turnRecords.delete(turn.id);
+    }
+  }
+  if (!state.turns.some((turn) => turn.id === selected)) {
+    state.selectedTurnId = state.turns[0]?.id || null;
+  }
+  if (state.selectedTurnId) {
+    state.expandedTurns.add(state.selectedTurnId);
+  }
+  renderEvents({ preserveScroll: true });
+  renderInspector();
 }
 
 function closeStream() {
@@ -172,6 +248,10 @@ function renderFiles() {
 }
 
 function renderEvents(options = {}) {
+  if (state.viewMode === "turns") {
+    renderTurns(options);
+    return;
+  }
   const visible = orderedRecords(filteredRecords());
   const render = () => {
     if (!visible.length) {
@@ -186,6 +266,301 @@ function renderEvents(options = {}) {
     render();
     scrollIfNeeded();
   }
+}
+
+function renderViewMode() {
+  for (const tab of el.viewTabs.querySelectorAll("[data-view]")) {
+    tab.classList.toggle("active", tab.dataset.view === state.viewMode);
+  }
+  const turnsMode = state.viewMode === "turns";
+  el.eventControls.hidden = turnsMode;
+  el.turnControls.hidden = !turnsMode;
+  el.eventFilterBar.hidden = turnsMode;
+  el.turnOverview.hidden = !turnsMode;
+  el.inspectorTitle.textContent = turnsMode ? "Turn Inspector" : "Inspector";
+  el.searchInput.placeholder = turnsMode ? "Search turns" : "Search rendered events";
+  for (const button of el.turnControls.querySelectorAll("[data-turn-density]")) {
+    button.classList.toggle("active", button.dataset.turnDensity === state.turnDensity);
+  }
+  renderTurnOverview();
+}
+
+function renderTurns(options = {}) {
+  const turns = filteredTurns();
+  const render = () => {
+    if (!turns.length) {
+      el.eventStream.innerHTML = `<div class="empty-state">No turns match this session.</div>`;
+      return;
+    }
+    if (state.turnDensity === "narrative") {
+      el.eventStream.innerHTML = `<div class="turn-narrative-list">${turns.map(renderNarrativeTurn).join("")}</div>`;
+    } else {
+      el.eventStream.innerHTML = `
+        <div class="turn-ledger" role="list" aria-label="Conversation turns">
+          <div class="turn-ledger-head" aria-hidden="true">
+            <span>Turn</span><span>Time</span><span>User request</span><span class="col-duration">Duration</span>
+            <span>Events</span><span>Token Δ</span><span class="col-tools">Tools</span><span class="col-status">Status</span>
+            <span>Context composition</span><span aria-hidden="true"></span>
+          </div>
+          ${turns.map(renderCompactTurn).join("")}
+        </div>
+      `;
+    }
+    scrollSelectedTurnIntoView(options);
+  };
+  if (options.preserveScroll) {
+    preserveScrollPosition(render);
+  } else {
+    render();
+  }
+  renderTurnOverview();
+}
+
+function renderCompactTurn(turn) {
+  const selected = turn.id === state.selectedTurnId;
+  const expanded = state.expandedTurns.has(turn.id);
+  return `
+    <article class="turn-ledger-item${selected ? " selected" : ""}" data-turn-id="${escapeAttr(turn.id)}" role="listitem">
+      <button class="turn-row-grid" type="button" data-select-turn="${escapeAttr(turn.id)}" aria-expanded="${expanded}">
+        <span class="turn-index">${escapeHtml(turnNumber(turn))}</span>
+        <span class="turn-time">${escapeHtml(formatShortTime(turn.startTime))}</span>
+        <span class="turn-request">${escapeHtml(turn.userMessage || "No user message captured")}</span>
+        <span class="col-duration">${escapeHtml(formatDuration(turn.durationMs))}</span>
+        <span>${formatNumber(turn.eventCount)}</span>
+        <span>${escapeHtml(formatDelta(turn.tokenDelta?.total_tokens))}</span>
+        <span class="col-tools">${formatNumber(turn.toolCount)}</span>
+        <span class="col-status"><span class="turn-status ${escapeAttr(turn.status)}">${escapeHtml(turn.status)}</span></span>
+        <span>${renderCompositionBar(turn)}</span>
+        <span class="turn-chevron" aria-hidden="true">${expanded ? "−" : "+"}</span>
+      </button>
+      ${expanded ? renderTurnExpansion(turn) : ""}
+    </article>
+  `;
+}
+
+function renderNarrativeTurn(turn) {
+  const selected = turn.id === state.selectedTurnId;
+  const expanded = state.expandedTurns.has(turn.id);
+  return `
+    <article class="turn-narrative-item${selected ? " selected" : ""}" data-turn-id="${escapeAttr(turn.id)}">
+      <button class="turn-narrative-header" type="button" data-select-turn="${escapeAttr(turn.id)}" aria-expanded="${expanded}">
+        <span class="turn-index">${escapeHtml(turnNumber(turn))}</span>
+        <span class="turn-request">${escapeHtml(turn.userMessage || "No user message captured")}</span>
+        <span class="turn-narrative-meta">${escapeHtml(formatShortTime(turn.startTime))} · ${escapeHtml(formatDuration(turn.durationMs))} · ${formatNumber(turn.eventCount)} events · ${escapeHtml(formatDelta(turn.tokenDelta?.total_tokens))}</span>
+        <span class="turn-chevron" aria-hidden="true">${expanded ? "−" : "+"}</span>
+      </button>
+      <div class="turn-narrative-composition">${renderCompositionBar(turn, true)}</div>
+      ${expanded ? renderTurnExpansion(turn) : ""}
+    </article>
+  `;
+}
+
+function renderTurnExpansion(turn) {
+  const inputCount = categoryCount(turn, ["requirement", "system", "retrieved"]);
+  const reasoningCount = categoryCount(turn, ["reasoning"]);
+  const toolCount = categoryCount(turn, ["tools"]);
+  const outputCount = categoryCount(turn, ["assistant"]);
+  return `
+    <div class="turn-expansion">
+      ${renderTurnPhase(turn, "input", "Input context", "User request, system & policy, retrieved context", inputCount, turn.userMessage)}
+      ${renderTurnPhase(turn, "reasoning", "Agent work", "Reasoning steps and intermediate actions", reasoningCount, "How the agent planned and worked through this turn.")}
+      ${renderTurnPhase(turn, "tools", "Tool calls", turn.toolNames?.length ? turn.toolNames.join(", ") : "Tool calls and results", toolCount, turn.toolCount ? `${turn.toolCount} calls across this turn.` : "No tool calls in this turn.")}
+      ${renderTurnPhase(turn, "assistant", "Final answer", "Assistant output", outputCount, turn.assistantMessage || "No final answer captured yet.")}
+    </div>
+  `;
+}
+
+function renderTurnPhase(turn, phase, label, meta, count, summary) {
+  const selected = turn.id === state.selectedTurnId && phase === state.turnPhaseFilter;
+  return `
+    <button class="turn-phase${selected ? " selected" : ""}" type="button" data-turn-phase="${phase}" data-turn-id="${escapeAttr(turn.id)}" aria-pressed="${selected}">
+      <span class="phase-dot ${phase}"></span>
+      <span class="phase-copy">
+        <span class="phase-title">${escapeHtml(label)} <span>${escapeHtml(meta)}</span></span>
+        <span class="phase-summary">${escapeHtml(oneLine(summary, 180))}</span>
+      </span>
+      <span class="phase-count">${formatNumber(count)} ${count === 1 ? "item" : "items"}</span>
+    </button>
+  `;
+}
+
+function renderTurnOverview() {
+  if (state.viewMode !== "turns") {
+    el.turnOverview.innerHTML = "";
+    return;
+  }
+  const turns = state.turns;
+  const totalTokens = turns.reduce((sum, turn) => sum + Number(turn.tokenDelta?.total_tokens || 0), 0);
+  const metric = state.compositionMetric;
+  const totals = TURN_CATEGORY_KEYS.map((key) => turns.reduce((sum, turn) => (
+    sum + Number(turn.composition?.[key]?.[metric] || 0)
+  ), 0));
+  const totalComposition = totals.reduce((sum, value) => sum + value, 0);
+  const segments = TURN_CATEGORY_KEYS.map((key, index) => {
+    const percent = totalComposition ? totals[index] / totalComposition * 100 : 0;
+    if (!percent) {
+      return "";
+    }
+    const valueLabel = metric === "bytes" ? formatBytes(totals[index]) : `${formatNumber(totals[index])} events`;
+    const label = percent >= 8 ? `${Math.round(percent)}%` : "";
+    return `<span class="session-composition-segment category-${key}" style="width:${percent.toFixed(2)}%" title="${escapeAttr(`${TURN_CATEGORY_LABELS[key]} · ${Math.round(percent)}% · ${valueLabel}`)}">${label}</span>`;
+  }).join("");
+  el.turnOverview.innerHTML = `
+    <div class="overview-summary">
+      <strong>Session overview</strong>
+      <span>${formatNumber(turns.length)} turns</span>
+      <span>${escapeHtml(formatDelta(totalTokens))} token delta</span>
+      <div class="metric-switch" aria-label="Composition measure">
+        <span>Measured by</span>
+        <button type="button" data-composition-metric="bytes" class="${state.compositionMetric === "bytes" ? "active" : ""}">Payload size</button>
+        <button type="button" data-composition-metric="events" class="${state.compositionMetric === "events" ? "active" : ""}">Event count</button>
+      </div>
+    </div>
+    <div class="session-composition-total" aria-label="Session context composition by ${metric === "bytes" ? "payload size" : "event count"}">${segments || `<span class="muted">No turn activity</span>`}</div>
+    <div class="composition-legend">${TURN_CATEGORY_KEYS.map((key, index) => {
+      const percent = totalComposition ? Math.round(totals[index] / totalComposition * 100) : 0;
+      const valueLabel = metric === "bytes" ? formatBytes(totals[index]) : `${formatNumber(totals[index])} events`;
+      return `<span title="${escapeAttr(`${TURN_CATEGORY_LABELS[key]} · ${valueLabel}`)}"><i class="category-${key}"></i>${escapeHtml(TURN_CATEGORY_LABELS[key])}<strong>${percent}%</strong></span>`;
+    }).join("")}</div>
+  `;
+}
+
+function renderCompositionBar(turn, showLabels = false) {
+  const values = TURN_CATEGORY_KEYS.map((key) => Number(turn.composition?.[key]?.[state.compositionMetric] || 0));
+  const total = values.reduce((sum, value) => sum + value, 0);
+  if (!total) {
+    return `<span class="composition-empty">No content</span>`;
+  }
+  return `<span class="composition-bar" aria-label="Turn composition by ${state.compositionMetric === "bytes" ? "payload size" : "event count"}">${TURN_CATEGORY_KEYS.map((key, index) => {
+    const percent = values[index] / total * 100;
+    if (!percent) {
+      return "";
+    }
+    const label = showLabels && percent >= 10 ? `${Math.round(percent)}%` : "";
+    return `<span class="composition-segment category-${key}" style="width:${percent.toFixed(2)}%" title="${escapeAttr(`${TURN_CATEGORY_LABELS[key]} ${Math.round(percent)}%`)}">${label}</span>`;
+  }).join("")}</span>`;
+}
+
+function filteredTurns() {
+  if (!state.query) {
+    return state.turns;
+  }
+  return state.turns.filter((turn) => [turn.id, turn.userMessage, turn.assistantMessage, ...(turn.toolNames || [])]
+    .join(" ").toLowerCase().includes(state.query));
+}
+
+function selectedTurn() {
+  return state.turns.find((turn) => turn.id === state.selectedTurnId) || null;
+}
+
+function categoryCount(turn, keys) {
+  return keys.reduce((sum, key) => sum + Number(turn.composition?.[key]?.events || 0), 0);
+}
+
+function turnNumber(turn) {
+  const chronological = [...state.turns].reverse();
+  const index = chronological.findIndex((candidate) => candidate.id === turn.id);
+  return index >= 0 ? `T${String(index + 1).padStart(2, "0")}` : "Turn";
+}
+
+function buildSessionHandoff() {
+  const chronological = [...state.turns].reverse();
+  const selectedIndex = chronological.findIndex((turn) => turn.id === state.selectedTurnId);
+  const endIndex = selectedIndex >= 0 ? selectedIndex : chronological.length - 1;
+  const included = chronological.slice(0, endIndex + 1);
+  const current = included.at(-1) || null;
+  const objective = handoffObjective(included);
+  const tools = [...new Set(included.flatMap((turn) => turn.toolNames || []))];
+  const cwd = state.session?.cwd || "Unknown — ask the user or inspect the target environment";
+  const sessionId = state.session?.id || formatFileId(state.selectedFile) || "Unknown";
+  const scope = current ? `${turnLabelForIndex(endIndex)} (${included.length} turns)` : "No captured turns";
+  const turnSummaries = included.map((turn, index) => {
+    const lines = [
+      `### ${turnLabelForIndex(index)} · ${formatTimeOnly(turn.startTime)} · ${turn.status}`,
+      `- 用户请求：${handoffText(turn.userMessage || "未捕获")}`,
+    ];
+    if (turn.assistantMessage) {
+      lines.push(`- Agent 结果：${handoffText(turn.assistantMessage)}`);
+    }
+    if (turn.toolNames?.length) {
+      lines.push(`- 使用工具：${turn.toolNames.join(", ")}`);
+    }
+    return lines.join("\n");
+  }).join("\n\n");
+
+  return `请接手并继续处理以下任务。此内容可独立使用，不依赖原会话。\n\n目标：\n- ${handoffText(objective || "根据下方 Turn 摘要确认下一步")}`
+    + `\n\n工作区：\n- cwd: ${cwd}\n- session_id: ${sessionId}\n- source_file: ${state.selectedFile || "Unknown"}`
+    + `\n\n交接范围：\n- 截止 ${scope}`
+    + `\n\n当前状态：\n- ${handoffText(current?.assistantMessage || "当前 Turn 尚未捕获 Agent 最终回复，请先检查工作区现状。")}`
+    + `\n- 已使用工具：${tools.length ? tools.join(", ") : "未记录"}`
+    + `\n\nTurn 摘要：\n\n${turnSummaries || "无可用 Turn 摘要。"}`
+    + `\n\n下一步：\n1. 先检查 cwd 中的当前文件和运行状态。\n2. 从“目标”和最后一个 Turn 继续，不要重复已明确完成的工作。`
+    + `\n\n注意事项：\n- 此交接包不包含 Git state、系统/开发者指令、内部 reasoning、密钥或完整原始工具日志。\n- 事实与推断请重新区分；历史路径、URL 和运行状态可能已经变化。`
+    + `\n\n期望输出：\n- 直接推进当前目标，并报告完成内容、验证结果和仍需决策的问题。`;
+}
+
+function turnLabelForIndex(index) {
+  return `T${String(index + 1).padStart(2, "0")}`;
+}
+
+function handoffText(value) {
+  return oneLine(String(value || ""), 600);
+}
+
+function handoffObjective(turns) {
+  const acknowledgment = /^(好|好的|可以|行|嗯|ok|okay|执行|继续|做吧|就这样|没问题)[。！!]*$/i;
+  for (let index = turns.length - 1; index >= 0; index -= 1) {
+    const message = String(turns[index]?.userMessage || "").trim();
+    if (message && !acknowledgment.test(message)) {
+      return message;
+    }
+  }
+  return turns.at(-1)?.userMessage || "";
+}
+
+function updateLiveTurn(item) {
+  const record = item.record || {};
+  const payloadType = getByPath(record, "payload.type");
+  const turnId = getByPath(record, "payload.turn_id") || getByPath(record, "turn_id");
+  if (payloadType === "task_started") {
+    return;
+  }
+  const turn = state.turns.find((candidate) => candidate.id === turnId)
+    || state.turns.find((candidate) => candidate.status === "live");
+  if (!turn) {
+    return;
+  }
+  turn.eventCount += 1;
+  turn.endLine = item.lineNo;
+  turn.endOffset = item.nextOffset;
+  turn.endTime = record.timestamp || turn.endTime;
+  const category = turnCategory(record);
+  if (category) {
+    turn.contentEventCount += 1;
+    turn.composition[category].events += 1;
+    turn.composition[category].bytes += new TextEncoder().encode(item.rawLine || JSON.stringify(record)).length;
+  }
+}
+
+function turnCategory(record) {
+  const type = record.type || "";
+  const payloadType = getByPath(record, "payload.type") || "";
+  const role = getByPath(record, "payload.role") || "";
+  if (payloadType === "user_message" || (payloadType === "message" && role === "user")) return "requirement";
+  if (type === "turn_context" || type === "world_state" || (payloadType === "message" && ["system", "developer"].includes(role))) return "system";
+  if (["tool_search_output", "web_search_end", "mcp_tool_call_end"].includes(payloadType)) return "retrieved";
+  if (["reasoning", "agent_reasoning"].includes(payloadType)) return "reasoning";
+  if (["function_call", "function_call_output", "custom_tool_call", "custom_tool_call_output", "tool_search_call", "patch_apply_begin", "patch_apply_end"].includes(payloadType)) return "tools";
+  if (payloadType === "agent_message" || (payloadType === "message" && role === "assistant")) return "assistant";
+  return null;
+}
+
+function scrollSelectedTurnIntoView(options) {
+  if (options.preserveScroll || !state.autoScroll || !state.selectedTurnId) {
+    return;
+  }
+  const selected = el.eventStream.querySelector(`[data-turn-id="${CSS.escape(state.selectedTurnId)}"]`);
+  selected?.scrollIntoView({ block: "nearest" });
 }
 
 function appendOrRender(item) {
@@ -244,6 +619,10 @@ function renderEventDetails(item, record) {
 }
 
 function renderInspector() {
+  if (state.viewMode === "turns") {
+    renderTurnInspector();
+    return;
+  }
   const item = selectedItem();
   renderInspectorTabs();
   if (!item) {
@@ -263,6 +642,329 @@ function renderInspector() {
   } else {
     el.inspectorContent.innerHTML = renderSummaryInspector(item, semantic);
   }
+}
+
+function renderTurnInspector() {
+  const turn = selectedTurn();
+  renderInspectorTabs();
+  if (!turn) {
+    el.inspectorStatus.textContent = "Select a turn";
+    el.inspectorContent.innerHTML = `<div class="empty-state">Choose a conversation turn to inspect its context.</div>`;
+    return;
+  }
+
+  const phaseRecords = turnRecordsForInspector(turn);
+  const phaseStatus = state.turnPhaseFilter
+    ? ` · ${turnPhaseLabel(state.turnPhaseFilter)}${phaseRecords ? ` (${formatNumber(phaseRecords.length)})` : ""}`
+    : "";
+  el.inspectorStatus.textContent = `${turnNumber(turn)} · ${formatShortTime(turn.startTime)} · ${turn.status}${phaseStatus}`;
+  if (state.inspectorTab === "structured") {
+    renderTurnStructuredInspector(turn);
+  } else if (state.inspectorTab === "raw") {
+    renderTurnRawInspector(turn);
+  } else if (state.inspectorTab === "related") {
+    el.inspectorContent.innerHTML = state.turnPhaseFilter
+      ? renderTurnPhaseRelatedInspector(turn)
+      : renderAdjacentTurns(turn);
+  } else {
+    el.inspectorContent.innerHTML = state.turnPhaseFilter
+      ? renderTurnPhaseSummaryInspector(turn)
+      : renderTurnSummaryInspector(turn);
+  }
+}
+
+function turnRecordsForInspector(turn) {
+  const records = state.turnRecords.get(turn.id);
+  if (!records) {
+    return null;
+  }
+  return state.turnPhaseFilter
+    ? records.filter((item) => phaseMatchesRecord(state.turnPhaseFilter, item.record || {}))
+    : records;
+}
+
+function turnPhaseLabel(phase) {
+  return {
+    input: "Input context",
+    reasoning: "Agent work",
+    tools: "Tool calls",
+    assistant: "Final answer",
+  }[phase] || phase;
+}
+
+function renderTurnPhaseFilterNote(records) {
+  if (!state.turnPhaseFilter) {
+    return "";
+  }
+  return `<div class="raw-filter-note"><span>${escapeHtml(turnPhaseLabel(state.turnPhaseFilter))} · ${formatNumber(records.length)} events</span><button type="button" data-clear-turn-phase>Clear</button></div>`;
+}
+
+function renderTurnPhaseSummaryInspector(turn) {
+  const records = turnRecordsForInspector(turn);
+  if (!records) {
+    return `
+      <div class="empty-state">
+        <p>Load this turn's records to inspect ${escapeHtml(turnPhaseLabel(state.turnPhaseFilter))}.</p>
+        <button type="button" data-load-turn-events="${escapeAttr(turn.id)}">Load phase records</button>
+      </div>
+    `;
+  }
+  const payloadBytes = records.reduce((sum, item) => sum + new TextEncoder().encode(item.rawLine || JSON.stringify(item.record || {})).length, 0);
+  const eventTypes = new Map();
+  const tools = new Set();
+  let toolCalls = 0;
+  let toolOutputs = 0;
+  for (const item of records) {
+    const record = item.record || {};
+    const payloadType = String(getByPath(record, "payload.type") || record.type || "unknown");
+    eventTypes.set(payloadType, (eventTypes.get(payloadType) || 0) + 1);
+    if (["function_call", "custom_tool_call", "tool_search_call"].includes(payloadType)) {
+      toolCalls += 1;
+      const toolName = getByPath(record, "payload.name") || getByPath(record, "payload.tool_name");
+      if (toolName) {
+        tools.add(String(toolName));
+      }
+    }
+    if (["function_call_output", "custom_tool_call_output", "tool_search_output"].includes(payloadType)) {
+      toolOutputs += 1;
+    }
+  }
+  const typeSummary = [...eventTypes.entries()].sort((left, right) => right[1] - left[1]);
+  return `
+    <div class="turn-scope-headline">
+      <span class="turn-index">${escapeHtml(turnNumber(turn))}</span>
+      <span class="scope-chevron">›</span>
+      <strong>${escapeHtml(turnPhaseLabel(state.turnPhaseFilter))}</strong>
+      <span>${formatNumber(records.length)} events</span>
+    </div>
+    <section class="inspector-section">
+      <div class="inspector-section-title">Selected scope <span>linked from the turn phase</span></div>
+      ${renderMetricRow("Phase", turnPhaseLabel(state.turnPhaseFilter))}
+      ${renderMetricRow("Events", records.length)}
+      ${renderMetricRow("Payload", formatBytes(payloadBytes))}
+      ${state.turnPhaseFilter === "tools" ? renderMetricRow("Tool calls", toolCalls) : ""}
+      ${state.turnPhaseFilter === "tools" ? renderMetricRow("Tool outputs", toolOutputs) : ""}
+      ${tools.size ? renderMetricRow("Tools", [...tools].join(", ")) : ""}
+    </section>
+    <section class="inspector-section">
+      <div class="inspector-section-title">Event types</div>
+      ${typeSummary.map(([type, count]) => renderMetricRow(type, count)).join("") || `<div class="muted">No event types captured.</div>`}
+    </section>
+    <section class="inspector-section">
+      <div class="inspector-section-title">Records in scope <span>select one to inspect raw content</span></div>
+      <div class="turn-raw-list compact">
+        ${records.map((item) => renderTurnRecordLink(item)).join("") || `<div class="muted">No records in this phase.</div>`}
+      </div>
+    </section>
+  `;
+}
+
+function renderTurnRecordLink(item) {
+  const semantic = describeEvent(item, item.record || {});
+  return `
+    <button type="button" class="turn-raw-item" data-inspect-turn-line="${item.lineNo}">
+      <span class="line-chip">${item.lineNo}</span>
+      <span class="kind-chip ${escapeAttr(semantic.kind)}">${escapeHtml(semantic.label)}</span>
+      <span>${escapeHtml(semantic.summary || "No summary")}</span>
+    </button>
+  `;
+}
+
+function renderTurnPhaseRelatedInspector(turn) {
+  const records = turnRecordsForInspector(turn);
+  if (!records) {
+    return `<div class="empty-state">Load phase records before inspecting related entries.</div>`;
+  }
+  const groups = new Map();
+  for (const item of records) {
+    const record = item.record || {};
+    const callId = getByPath(record, "payload.call_id") || getByPath(record, "call_id");
+    const key = callId ? `call_id ${callId}` : (getByPath(record, "payload.type") || record.type || "other");
+    if (!groups.has(key)) {
+      groups.set(key, []);
+    }
+    groups.get(key).push(item);
+  }
+  return `
+    ${renderTurnPhaseFilterNote(records)}
+    <div class="phase-related-groups">
+      ${[...groups.entries()].map(([key, items]) => `
+        <section class="inspector-section">
+          <div class="inspector-section-title">${escapeHtml(key)} <span>${formatNumber(items.length)} records</span></div>
+          <div class="turn-raw-list compact">${items.map((item) => renderTurnRecordLink(item)).join("")}</div>
+        </section>
+      `).join("") || `<div class="empty-state">No related records in this phase.</div>`}
+    </div>
+  `;
+}
+
+function renderTurnStructuredInspector(turn) {
+  const records = turnRecordsForInspector(turn);
+  if (!records) {
+    el.inspectorContent.innerHTML = `
+      <div class="empty-state">
+        <p>Load this turn's ${formatNumber(turn.eventCount)} records to inspect their structure.</p>
+        <button type="button" data-load-turn-events="${escapeAttr(turn.id)}">Load structured records</button>
+      </div>
+    `;
+    return;
+  }
+  el.inspectorContent.innerHTML = `
+    ${renderTurnPhaseFilterNote(records)}
+    <div class="inspector-tree-toolbar">
+      <button class="tree-action" type="button" data-tree-action="expand-all">Expand all</button>
+      <button class="tree-action" type="button" data-tree-action="collapse-all">Collapse all</button>
+    </div>
+    <div class="json-tree turn-record-tree">
+      ${records.map((item) => {
+        const semantic = describeEvent(item, item.record || {});
+        const selected = Number(state.selectedLineNo) === Number(item.lineNo);
+        return `
+          <details class="turn-record-node${selected ? " selected" : ""}"${selected ? " open" : ""}>
+            <summary>
+              <span class="line-chip">${item.lineNo}</span>
+              <span class="kind-chip ${escapeAttr(semantic.kind)}">${escapeHtml(semantic.label)}</span>
+              <span class="turn-record-summary">${escapeHtml(semantic.summary || "No summary")}</span>
+            </summary>
+            <div class="turn-record-content">${renderJsonTree(item.record || {}, "record", 1)}</div>
+          </details>
+        `;
+      }).join("") || `<div class="empty-state">No records in this phase.</div>`}
+    </div>
+  `;
+}
+
+function renderTurnSummaryInspector(turn) {
+  const metric = state.compositionMetric;
+  const values = TURN_CATEGORY_KEYS.map((key) => Number(turn.composition?.[key]?.[metric] || 0));
+  const total = values.reduce((sum, value) => sum + value, 0);
+  const usage = turn.tokenDelta || {};
+  return `
+    <div class="turn-inspector-headline">
+      <strong>${escapeHtml(turnNumber(turn))}</strong>
+      <span>${escapeHtml(turn.userMessage || "No user message captured")}</span>
+      <code>${escapeHtml(turn.id)}</code>
+    </div>
+    <section class="inspector-section">
+      <div class="inspector-section-title">Context composition <span>by ${metric === "bytes" ? "payload size" : "event count"}</span></div>
+      ${renderCompositionBar(turn)}
+      <div class="composition-breakdown">
+        ${TURN_CATEGORY_KEYS.map((key, index) => {
+          const percent = total ? Math.round(values[index] / total * 100) : 0;
+          return `<div><span><i class="category-${key}"></i>${escapeHtml(TURN_CATEGORY_LABELS[key])}</span><strong>${percent}%</strong><code>${metric === "bytes" ? formatBytes(values[index]) : formatNumber(values[index])}</code></div>`;
+        }).join("")}
+      </div>
+    </section>
+    <section class="inspector-section">
+      <div class="inspector-section-title">Token usage <span>cumulative delta</span></div>
+      ${renderMetricRow("Input", usage.input_tokens)}
+      ${renderMetricRow("Cached input", usage.cached_input_tokens)}
+      ${renderMetricRow("Output", usage.output_tokens)}
+      ${renderMetricRow("Reasoning", usage.reasoning_output_tokens)}
+      ${renderMetricRow("Net token delta", usage.total_tokens, true)}
+      <p class="metric-note">Token deltas are independent of payload composition.</p>
+    </section>
+    <section class="inspector-section">
+      <div class="inspector-section-title">Turn details</div>
+      ${renderMetricRow("Duration", formatDuration(turn.durationMs))}
+      ${renderMetricRow("Events", turn.eventCount)}
+      ${renderMetricRow("Tools called", turn.toolCount)}
+      ${renderMetricRow("Status", turn.status)}
+    </section>
+    <section class="inspector-section inspector-actions">
+      <button type="button" data-open-turn-events="${escapeAttr(turn.id)}">Open raw events (${formatNumber(turn.eventCount)})</button>
+      <button type="button" data-copy-turn="${escapeAttr(turn.id)}">Copy turn context</button>
+    </section>
+  `;
+}
+
+function renderMetricRow(label, value, strong = false) {
+  const formatted = typeof value === "number" ? formatNumber(value) : String(value ?? "—");
+  return `<div class="turn-metric-row${strong ? " total" : ""}"><span>${escapeHtml(label)}</span><strong>${escapeHtml(formatted)}</strong></div>`;
+}
+
+function renderTurnRawInspector(turn) {
+  const records = turnRecordsForInspector(turn);
+  if (!records) {
+    el.inspectorContent.innerHTML = `
+      <div class="empty-state">
+        <p>Load this turn's ${formatNumber(turn.eventCount)} raw events on demand.</p>
+        <button type="button" data-load-turn-events="${escapeAttr(turn.id)}">Load raw events</button>
+      </div>
+    `;
+    return;
+  }
+  el.inspectorContent.innerHTML = `
+    ${renderTurnPhaseFilterNote(records)}
+    <div class="turn-raw-list">
+      ${records.map((item) => {
+        const semantic = describeEvent(item, item.record || {});
+        const selected = Number(state.selectedLineNo) === Number(item.lineNo);
+        const raw = item.rawLine || JSON.stringify(item.record || {}, null, 2);
+        return `
+          <button type="button" class="turn-raw-item${selected ? " selected" : ""}" data-select-line="${item.lineNo}" aria-expanded="${selected}">
+            <span class="line-chip">${item.lineNo}</span>
+            <span class="kind-chip ${escapeAttr(semantic.kind)}">${escapeHtml(semantic.label)}</span>
+            <span>${escapeHtml(semantic.summary || "No summary")}</span>
+          </button>
+          ${selected ? `
+            <section class="turn-raw-detail" aria-label="Raw event line ${item.lineNo}">
+              <div class="turn-raw-detail-head"><strong>Line ${item.lineNo}</strong><span>${escapeHtml(semantic.label)}</span></div>
+              <pre class="raw-json">${escapeHtml(raw)}</pre>
+            </section>
+          ` : ""}
+        `;
+      }).join("") || `<div class="empty-state">No events in this phase.</div>`}
+    </div>
+  `;
+}
+
+function renderAdjacentTurns(turn) {
+  const chronological = [...state.turns].reverse();
+  const index = chronological.findIndex((candidate) => candidate.id === turn.id);
+  const adjacent = [chronological[index - 1], chronological[index + 1]].filter(Boolean);
+  if (!adjacent.length) {
+    return `<div class="empty-state">No adjacent turns.</div>`;
+  }
+  return `<div class="related-list">${adjacent.map((candidate) => `
+    <button class="related-item turn-related" type="button" data-select-turn="${escapeAttr(candidate.id)}">
+      <span class="turn-index">${escapeHtml(turnNumber(candidate))}</span>
+      <span class="turn-status ${escapeAttr(candidate.status)}">${escapeHtml(candidate.status)}</span>
+      <span>${escapeHtml(oneLine(candidate.userMessage || "No user message", 120))}</span>
+    </button>
+  `).join("")}</div>`;
+}
+
+async function loadTurnRecords(turn) {
+  if (state.turnRecords.has(turn.id)) {
+    return state.turnRecords.get(turn.id);
+  }
+  const params = new URLSearchParams({
+    date: state.selectedDate,
+    file: state.selectedFile,
+    start: String(turn.startOffset),
+    end: String(turn.endOffset),
+  });
+  const data = await api(`/api/turn-events?${params.toString()}`);
+  const records = data.records || [];
+  state.turnRecords.set(turn.id, records);
+  const merged = new Map(state.records.map((item) => [`${item.offset}:${item.lineNo}`, item]));
+  for (const item of records) {
+    merged.set(`${item.offset}:${item.lineNo}`, item);
+  }
+  state.records = [...merged.values()].sort((left, right) => left.offset - right.offset);
+  return records;
+}
+
+function phaseMatchesRecord(phase, record) {
+  const category = turnCategory(record);
+  if (phase === "input") {
+    return ["requirement", "system", "retrieved"].includes(category);
+  }
+  if (phase === "assistant") {
+    return category === "assistant";
+  }
+  return category === phase;
 }
 
 function renderInspectorTabs() {
@@ -710,6 +1412,41 @@ function formatTimestamp(value) {
   return date.toLocaleTimeString();
 }
 
+function formatShortTime(value) {
+  if (!value) {
+    return "—";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return String(value);
+  }
+  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function formatDuration(value) {
+  const milliseconds = Number(value);
+  if (!Number.isFinite(milliseconds)) {
+    return "—";
+  }
+  const seconds = Math.max(0, Math.round(milliseconds / 1000));
+  if (seconds < 60) {
+    return `${seconds}s`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  return `${minutes}m ${String(remainder).padStart(2, "0")}s`;
+}
+
+function formatNumber(value) {
+  const number = Number(value || 0);
+  return new Intl.NumberFormat("en-US", { notation: number >= 100000 ? "compact" : "standard", maximumFractionDigits: 1 }).format(number);
+}
+
+function formatDelta(value) {
+  const number = Number(value || 0);
+  return `${number >= 0 ? "+" : ""}${formatNumber(number)}`;
+}
+
 function summarizeRecord(record) {
   const candidates = [
     getByPath(record, "payload.output"),
@@ -927,12 +1664,75 @@ el.fileList.addEventListener("click", async (event) => {
   await loadInitial();
 });
 
+el.viewTabs.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-view]");
+  if (!button || button.dataset.view === state.viewMode) {
+    return;
+  }
+  state.viewMode = button.dataset.view;
+  state.query = "";
+  el.searchInput.value = "";
+  state.inspectorTab = "summary";
+  state.turnPhaseFilter = "";
+  renderViewMode();
+  renderEvents();
+  renderInspector();
+});
+
+el.turnControls.addEventListener("click", (event) => {
+  const density = event.target.closest("[data-turn-density]");
+  if (!density) {
+    return;
+  }
+  state.turnDensity = density.dataset.turnDensity;
+  renderViewMode();
+  renderEvents({ preserveScroll: true });
+});
+
+el.turnOverview.addEventListener("click", (event) => {
+  const metric = event.target.closest("[data-composition-metric]");
+  if (!metric) {
+    return;
+  }
+  state.compositionMetric = metric.dataset.compositionMetric;
+  renderEvents({ preserveScroll: true });
+  renderInspector();
+});
+
+el.copyHandoffButton.addEventListener("click", async () => {
+  await copyText(buildSessionHandoff(), `Handoff copied · ${formatNumber(state.turns.length)} turns`);
+});
+
 el.eventStream.addEventListener("click", async (event) => {
+  const selectTurn = event.target.closest("[data-select-turn]");
+  const turnPhase = event.target.closest("[data-turn-phase]");
   const expand = event.target.closest("[data-expand]");
   const collapse = event.target.closest("[data-collapse]");
   const selectLine = event.target.closest("[data-select-line]");
   const copyFull = event.target.closest("[data-copy-full]");
-  if (expand) {
+  if (turnPhase) {
+    const turn = state.turns.find((candidate) => candidate.id === turnPhase.dataset.turnId);
+    if (!turn) {
+      return;
+    }
+    state.selectedTurnId = turn.id;
+    state.turnPhaseFilter = turnPhase.dataset.turnPhase;
+    state.selectedLineNo = null;
+    state.inspectorTab = "raw";
+    await loadTurnRecords(turn);
+    renderEvents({ preserveScroll: true });
+    renderInspector();
+  } else if (selectTurn) {
+    const turnId = selectTurn.dataset.selectTurn;
+    const alreadyExpanded = state.expandedTurns.has(turnId);
+    state.selectedTurnId = turnId;
+    state.selectedLineNo = null;
+    state.expandedTurns = alreadyExpanded ? new Set() : new Set([turnId]);
+    state.turnPhaseFilter = "";
+    state.inspectorTab = "summary";
+    renderEvents({ preserveScroll: true });
+    renderInspector();
+  } else if (expand) {
     state.expanded.add(expand.dataset.expand);
     renderEvents({ preserveScroll: true });
   } else if (collapse) {
@@ -960,12 +1760,16 @@ el.eventFilterBar.addEventListener("click", (event) => {
   renderEvents();
 });
 
-el.inspectorTabs.addEventListener("click", (event) => {
+el.inspectorTabs.addEventListener("click", async (event) => {
   const button = event.target.closest("[data-inspector-tab]");
   if (!button) {
     return;
   }
   state.inspectorTab = button.dataset.inspectorTab;
+  const turn = selectedTurn();
+  if (state.viewMode === "turns" && turn && ["structured", "raw"].includes(state.inspectorTab) && !state.turnRecords.has(turn.id)) {
+    await loadTurnRecords(turn);
+  }
   renderInspector();
 });
 
@@ -982,12 +1786,65 @@ function toggleInspectorWide() {
 el.inspectorContent.addEventListener("click", (event) => {
   const treeAction = event.target.closest("[data-tree-action]");
   const selectLine = event.target.closest("[data-select-line]");
+  const selectTurn = event.target.closest("[data-select-turn]");
+  const loadTurn = event.target.closest("[data-load-turn-events]");
+  const openTurn = event.target.closest("[data-open-turn-events]");
+  const copyTurn = event.target.closest("[data-copy-turn]");
+  const clearPhase = event.target.closest("[data-clear-turn-phase]");
+  const inspectTurnLine = event.target.closest("[data-inspect-turn-line]");
   if (treeAction) {
     handleInspectorTreeAction(treeAction.dataset.treeAction);
-  } else if (selectLine) {
-    state.selectedLineNo = Number(selectLine.dataset.selectLine);
+  } else if (loadTurn) {
+    const turn = state.turns.find((candidate) => candidate.id === loadTurn.dataset.loadTurnEvents);
+    if (turn) {
+      loadTurnRecords(turn).then(() => renderInspector());
+    }
+  } else if (openTurn) {
+    const turn = state.turns.find((candidate) => candidate.id === openTurn.dataset.openTurnEvents);
+    if (turn) {
+      loadTurnRecords(turn).then((records) => {
+        state.viewMode = "events";
+        state.selectedLineNo = records[0]?.lineNo || null;
+        state.query = "";
+        el.searchInput.value = "";
+        state.inspectorTab = "summary";
+        renderViewMode();
+        renderEvents();
+        renderInspector();
+      });
+    }
+  } else if (copyTurn) {
+    const turn = state.turns.find((candidate) => candidate.id === copyTurn.dataset.copyTurn);
+    if (turn) {
+      copyText(JSON.stringify({
+        turn_id: turn.id,
+        user: turn.userMessage,
+        assistant: turn.assistantMessage,
+        composition: turn.composition,
+        token_delta: turn.tokenDelta,
+      }, null, 2));
+    }
+  } else if (clearPhase) {
+    state.turnPhaseFilter = "";
+    state.selectedLineNo = null;
+    renderInspector();
+  } else if (selectTurn) {
+    state.selectedTurnId = selectTurn.dataset.selectTurn;
+    state.selectedLineNo = null;
+    state.expandedTurns = new Set([state.selectedTurnId]);
     state.inspectorTab = "summary";
     renderEvents({ preserveScroll: true });
+    renderInspector();
+  } else if (inspectTurnLine) {
+    state.selectedLineNo = Number(inspectTurnLine.dataset.inspectTurnLine);
+    state.inspectorTab = "raw";
+    renderInspector();
+  } else if (selectLine) {
+    state.selectedLineNo = Number(selectLine.dataset.selectLine);
+    if (state.viewMode !== "turns") {
+      state.inspectorTab = "summary";
+      renderEvents({ preserveScroll: true });
+    }
     renderInspector();
   } else {
     return;
@@ -1035,13 +1892,14 @@ el.pauseButton.addEventListener("click", () => {
   }
 });
 
-async function copyText(text) {
+async function copyText(text, statusText = "Copied") {
   await navigator.clipboard.writeText(text);
-  setStatus("Copied");
+  setStatus(statusText);
 }
 
 setInspectorWidth(state.inspectorWidth, false);
 initResizableInspector();
+renderViewMode();
 
 loadDates().catch((error) => {
   el.rootPath.textContent = error.message;

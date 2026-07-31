@@ -98,6 +98,34 @@ class BackendHelperTests(unittest.TestCase):
             second = tailer.read_available()
             self.assertEqual([item["record"]["i"] for item in second], [3])
 
+    def test_summarize_session_turns_groups_content_and_token_deltas(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "rollout-turns.jsonl"
+            path.write_text(
+                "\n".join(json.dumps(record) for record in turn_fixture_records()) + "\n",
+                encoding="utf-8",
+            )
+
+            summary = server.summarize_session_turns(path)
+
+            self.assertEqual(len(summary["turns"]), 2)
+            self.assertEqual(summary["session"]["id"], "session-test")
+            self.assertEqual(summary["session"]["cwd"], "/tmp")
+            self.assertEqual(summary["session"]["originator"], "Codex Desktop")
+            self.assertEqual(summary["turns"][0]["id"], "turn-2")
+            self.assertEqual(summary["turns"][0]["status"], "aborted")
+            self.assertEqual(summary["turns"][0]["tokenDelta"]["total_tokens"], 80)
+            first = summary["turns"][1]
+            self.assertEqual(first["userMessage"], "Build a turn view")
+            self.assertEqual(first["assistantMessage"], "Implemented it")
+            self.assertEqual(first["toolCount"], 1)
+            self.assertEqual(first["composition"]["tools"]["events"], 2)
+            self.assertEqual(first["tokenDelta"]["total_tokens"], 120)
+
+            records = server.read_jsonl_range(path, first["startOffset"], first["endOffset"])
+            self.assertEqual(records[0]["record"]["payload"]["type"], "task_started")
+            self.assertEqual(records[-1]["record"]["payload"]["type"], "task_complete")
+
 
 class ApiTests(unittest.TestCase):
     def test_api_lists_dates_files_and_initial_recent_records(self):
@@ -133,6 +161,29 @@ class ApiTests(unittest.TestCase):
 
             self.assertEqual(raised.exception.code, 400)
             raised.exception.close()
+
+    def test_api_serves_turn_summaries_and_lazy_turn_events(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            day = root / "2026" / "05" / "09"
+            day.mkdir(parents=True)
+            path = day / "rollout-turns.jsonl"
+            path.write_text(
+                "\n".join(json.dumps(record) for record in turn_fixture_records()) + "\n",
+                encoding="utf-8",
+            )
+
+            with running_server(root) as base_url:
+                summary = get_json(f"{base_url}/api/turns?date=2026-05-09&file=rollout-turns.jsonl")
+                turn = next(item for item in summary["turns"] if item["id"] == "turn-1")
+                detail = get_json(
+                    f"{base_url}/api/turn-events?date=2026-05-09&file=rollout-turns.jsonl"
+                    f"&start={turn['startOffset']}&end={turn['endOffset']}"
+                )
+
+            self.assertEqual(len(summary["turns"]), 2)
+            self.assertEqual(detail["records"][0]["record"]["payload"]["turn_id"], "turn-1")
+            self.assertEqual(detail["records"][-1]["record"]["payload"]["type"], "task_complete")
 
     def test_static_browser_files_are_served(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -203,6 +254,35 @@ class ApiTests(unittest.TestCase):
             self.assertIn("renderInspector", js)
             self.assertIn("findRelatedEvents", js)
             self.assertIn("json-tree", css)
+
+    def test_static_browser_files_include_turn_ledger_and_context_controls(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            with running_server(root) as base_url:
+                html = get_text(f"{base_url}/")
+                js = get_text(f"{base_url}/static/app.js")
+                css = get_text(f"{base_url}/static/styles.css")
+
+            self.assertIn("viewTabs", html)
+            self.assertIn("turnOverview", html)
+            self.assertIn("data-turn-density", html)
+            self.assertIn("renderCompactTurn", js)
+            self.assertIn("renderTurnSummaryInspector", js)
+            self.assertIn("loadTurnRecords", js)
+            self.assertIn("turn-ledger", css)
+            self.assertIn("composition-bar", css)
+            self.assertIn("session-composition-total", css)
+            self.assertIn("copyHandoffButton", html)
+            self.assertIn("buildSessionHandoff", js)
+            self.assertIn("handoffObjective", js)
+            self.assertIn("renderTurnStructuredInspector", js)
+            self.assertIn("turnRecordsForInspector", js)
+            self.assertIn("renderTurnPhaseSummaryInspector", js)
+            self.assertIn("data-inspect-turn-line", js)
+            self.assertIn("turn-raw-detail", css)
+            self.assertIn("turn-record-node", css)
+            self.assertIn("turn-phase.selected", css)
 
     def test_static_browser_files_include_independent_scroll_and_wide_inspector(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -298,6 +378,44 @@ def get_text(url: str):
 
 def local_url_opener():
     return urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def turn_fixture_records():
+    def usage(input_tokens, output_tokens, reasoning_tokens, total_tokens):
+        return {
+            "type": "event_msg",
+            "timestamp": "2026-05-09T10:00:05Z",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "total_token_usage": {
+                        "input_tokens": input_tokens,
+                        "cached_input_tokens": input_tokens // 2,
+                        "cache_write_input_tokens": 0,
+                        "output_tokens": output_tokens,
+                        "reasoning_output_tokens": reasoning_tokens,
+                        "total_tokens": total_tokens,
+                    }
+                },
+            },
+        }
+
+    return [
+        {"type": "session_meta", "timestamp": "2026-05-09T09:59:59Z", "payload": {"session_id": "session-test", "cwd": "/tmp", "originator": "Codex Desktop"}},
+        {"type": "event_msg", "timestamp": "2026-05-09T10:00:00Z", "payload": {"type": "task_started", "turn_id": "turn-1"}},
+        {"type": "turn_context", "timestamp": "2026-05-09T10:00:00Z", "payload": {"turn_id": "turn-1", "cwd": "/tmp"}},
+        {"type": "event_msg", "timestamp": "2026-05-09T10:00:01Z", "payload": {"type": "user_message", "message": "Build a turn view"}},
+        {"type": "response_item", "timestamp": "2026-05-09T10:00:02Z", "payload": {"type": "reasoning", "summary": []}},
+        {"type": "response_item", "timestamp": "2026-05-09T10:00:03Z", "payload": {"type": "function_call", "name": "read_file", "call_id": "1"}},
+        {"type": "response_item", "timestamp": "2026-05-09T10:00:04Z", "payload": {"type": "function_call_output", "output": "ok", "call_id": "1"}},
+        {"type": "event_msg", "timestamp": "2026-05-09T10:00:05Z", "payload": {"type": "agent_message", "message": "Implemented it"}},
+        usage(100, 15, 5, 120),
+        {"type": "event_msg", "timestamp": "2026-05-09T10:00:06Z", "payload": {"type": "task_complete", "turn_id": "turn-1", "duration_ms": 6000}},
+        {"type": "event_msg", "timestamp": "2026-05-09T10:01:00Z", "payload": {"type": "task_started", "turn_id": "turn-2"}},
+        {"type": "event_msg", "timestamp": "2026-05-09T10:01:01Z", "payload": {"type": "user_message", "message": "Stop the turn"}},
+        usage(170, 22, 8, 200),
+        {"type": "event_msg", "timestamp": "2026-05-09T10:01:03Z", "payload": {"type": "turn_aborted", "turn_id": "turn-2", "duration_ms": 3000}},
+    ]
 
 
 if __name__ == "__main__":

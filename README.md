@@ -9,6 +9,10 @@ It reads Codex session files from `~/.codex/sessions/YYYY/MM/DD`, renders each J
 - Date and rollout file picker for Codex session logs.
 - Live tailing through server-sent events.
 - Readable event stream with filters for messages, tools, patches, errors, tokens, and context.
+- Turn ledger that groups each user conversation round with compact and narrative views.
+- Session-total and per-turn context composition by payload size or event count, with token deltas reported separately.
+- One-click paste-ready session handoff through the selected turn, including the recorded working directory while excluding Git state and private/internal context.
+- Lazy loading of raw events for a selected turn, so large sessions stay responsive.
 - Inspector tabs for summary, structured JSON tree, raw JSON, and related events.
 - Expand all / collapse all controls for structured JSON.
 - Resizable inspector pane and latest-top / latest-bottom ordering.

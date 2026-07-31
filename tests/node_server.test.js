@@ -140,6 +140,41 @@ test("listRolloutFiles sorts by modified time descending", () => {
   }
 });
 
+test("summarizeSessionTurns groups records, composition, and cumulative token deltas", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-session-viewer-"));
+  const file = path.join(root, "rollout-turns.jsonl");
+  try {
+    const records = turnFixtureRecords();
+    fs.writeFileSync(file, records.map((record) => JSON.stringify(record)).join("\n") + "\n");
+
+    const summary = server.summarizeSessionTurns(file);
+
+    assert.equal(summary.turns.length, 2);
+    assert.equal(summary.session.id, "session-test");
+    assert.equal(summary.session.cwd, "/tmp");
+    assert.equal(summary.session.originator, "Codex Desktop");
+    assert.equal(summary.turns[0].id, "turn-2");
+    assert.equal(summary.turns[0].status, "aborted");
+    assert.equal(summary.turns[0].tokenDelta.total_tokens, 80);
+    assert.equal(summary.turns[1].id, "turn-1");
+    assert.equal(summary.turns[1].userMessage, "Build a turn view");
+    assert.equal(summary.turns[1].assistantMessage, "Implemented it");
+    assert.equal(summary.turns[1].toolCount, 1);
+    assert.equal(summary.turns[1].composition.requirement.events, 1);
+    assert.equal(summary.turns[1].composition.reasoning.events, 1);
+    assert.equal(summary.turns[1].composition.tools.events, 2);
+    assert.equal(summary.turns[1].tokenDelta.total_tokens, 120);
+    assert.equal(summary.offset, fs.statSync(file).size);
+
+    const firstTurn = summary.turns[1];
+    const turnRecords = server.readJsonlRange(file, firstTurn.startOffset, firstTurn.endOffset);
+    assert.equal(turnRecords[0].record.payload.type, "task_started");
+    assert.equal(turnRecords.at(-1).record.payload.type, "task_complete");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("HTTP API serves dates, initial records, and static assets", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-session-viewer-"));
   const day = path.join(root, "2026", "05", "09");
@@ -167,6 +202,65 @@ test("HTTP API serves dates, initial records, and static assets", async () => {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("HTTP API serves turn summaries and lazy turn events", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-session-viewer-"));
+  const day = path.join(root, "2026", "05", "09");
+  fs.mkdirSync(day, { recursive: true });
+  const file = path.join(day, "rollout-turns.jsonl");
+  fs.writeFileSync(file, turnFixtureRecords().map((record) => JSON.stringify(record)).join("\n") + "\n");
+
+  const httpd = server.createHttpServer({ host: "127.0.0.1", port: 0, root });
+  try {
+    await listen(httpd);
+    const { port } = httpd.address();
+    const baseUrl = `http://127.0.0.1:${port}`;
+    const summary = await getJson(`${baseUrl}/api/turns?date=2026-05-09&file=rollout-turns.jsonl`);
+    const turn = summary.turns.find((item) => item.id === "turn-1");
+    const detail = await getJson(`${baseUrl}/api/turn-events?date=2026-05-09&file=rollout-turns.jsonl&start=${turn.startOffset}&end=${turn.endOffset}`);
+
+    assert.equal(summary.turns.length, 2);
+    assert.equal(detail.records[0].record.payload.turn_id, "turn-1");
+    assert.equal(detail.records.at(-1).record.payload.type, "task_complete");
+  } finally {
+    await close(httpd);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+function turnFixtureRecords() {
+  const usage = (input, output, reasoning, total) => ({
+    type: "event_msg",
+    timestamp: "2026-05-09T10:00:05Z",
+    payload: {
+      type: "token_count",
+      info: { total_token_usage: {
+        input_tokens: input,
+        cached_input_tokens: Math.floor(input / 2),
+        cache_write_input_tokens: 0,
+        output_tokens: output,
+        reasoning_output_tokens: reasoning,
+        total_tokens: total,
+      } },
+    },
+  });
+  return [
+    { type: "session_meta", timestamp: "2026-05-09T09:59:59Z", payload: { session_id: "session-test", cwd: "/tmp", originator: "Codex Desktop" } },
+    { type: "event_msg", timestamp: "2026-05-09T10:00:00Z", payload: { type: "task_started", turn_id: "turn-1" } },
+    { type: "turn_context", timestamp: "2026-05-09T10:00:00Z", payload: { turn_id: "turn-1", cwd: "/tmp" } },
+    { type: "event_msg", timestamp: "2026-05-09T10:00:01Z", payload: { type: "user_message", message: "Build a turn view" } },
+    { type: "response_item", timestamp: "2026-05-09T10:00:02Z", payload: { type: "reasoning", summary: [] } },
+    { type: "response_item", timestamp: "2026-05-09T10:00:03Z", payload: { type: "function_call", name: "read_file", call_id: "1" } },
+    { type: "response_item", timestamp: "2026-05-09T10:00:04Z", payload: { type: "function_call_output", output: "ok", call_id: "1" } },
+    { type: "event_msg", timestamp: "2026-05-09T10:00:05Z", payload: { type: "agent_message", message: "Implemented it" } },
+    usage(100, 15, 5, 120),
+    { type: "event_msg", timestamp: "2026-05-09T10:00:06Z", payload: { type: "task_complete", turn_id: "turn-1", duration_ms: 6000 } },
+    { type: "event_msg", timestamp: "2026-05-09T10:01:00Z", payload: { type: "task_started", turn_id: "turn-2" } },
+    { type: "event_msg", timestamp: "2026-05-09T10:01:01Z", payload: { type: "user_message", message: "Stop the turn" } },
+    usage(170, 22, 8, 200),
+    { type: "event_msg", timestamp: "2026-05-09T10:01:03Z", payload: { type: "turn_aborted", turn_id: "turn-2", duration_ms: 3000 } },
+  ];
+}
 
 function listen(httpd) {
   return new Promise((resolve, reject) => {
