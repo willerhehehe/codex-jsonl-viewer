@@ -82,6 +82,36 @@ python3 server.py --port 8765
 npm test
 ```
 
+## Release
+
+Releases are created from a clean, up-to-date `main` branch. Choose the semantic
+version increment and run one command:
+
+```bash
+npm run release:patch
+npm run release:minor
+npm run release:major
+```
+
+The release script verifies `main`, fetches `origin/main`, runs the full test
+suite and an npm package dry run, creates the version commit and matching `v*`
+Git tag, then pushes `main` and the tag. The tag triggers
+`.github/workflows/publish.yml`, which verifies the version again and publishes
+the package to npm.
+
+### One-time npm setup
+
+Configure `codex-jsonl-viewer` on npm with a GitHub Actions Trusted Publisher:
+
+- GitHub owner: `willerhehehe`
+- Repository: `codex-jsonl-viewer`
+- Workflow filename: `publish.yml`
+- Allowed action: `npm publish`
+
+Trusted Publishing uses short-lived OIDC credentials, so the repository does
+not need a long-lived `NPM_TOKEN` secret. Do not run `npm publish` manually for
+normal releases.
+
 ## License
 
 MIT

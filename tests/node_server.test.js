@@ -13,6 +13,25 @@ test("package exposes an npx bin without runtime dependencies", () => {
   assert.equal(pkg.name, "codex-jsonl-viewer");
   assert.equal(pkg.bin["codex-jsonl-viewer"], "bin/codex-jsonl-viewer.js");
   assert.deepEqual(pkg.dependencies || {}, {});
+  assert.equal(pkg.scripts["release:patch"], "node scripts/release.js patch");
+  assert.equal(pkg.scripts["release:minor"], "node scripts/release.js minor");
+  assert.equal(pkg.scripts["release:major"], "node scripts/release.js major");
+});
+
+test("tag releases are guarded and published through trusted GitHub Actions", () => {
+  const root = path.join(__dirname, "..");
+  const releaseScript = fs.readFileSync(path.join(root, "scripts", "release.js"), "utf8");
+  const workflow = fs.readFileSync(path.join(root, ".github", "workflows", "publish.yml"), "utf8");
+
+  assert.match(releaseScript, /branch !== "main"/);
+  assert.match(releaseScript, /\["status", "--porcelain"\]/);
+  assert.match(releaseScript, /origin\/main/);
+  assert.match(releaseScript, /"pack", "--dry-run"/);
+  assert.match(releaseScript, /"push", "origin", "main", "--follow-tags"/);
+  assert.match(workflow, /tags:\s*\n\s*- "v\*"/);
+  assert.match(workflow, /id-token: write/);
+  assert.match(workflow, /github\.ref_name/);
+  assert.match(workflow, /npm publish --access public/);
 });
 
 test("default sessions root expands home", () => {

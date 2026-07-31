@@ -24,7 +24,10 @@
   "scripts": {
     "test": "node --test tests/node_server.test.js && python3 -m unittest tests.test_server && python3 -m py_compile server.py",
     "test:node": "node --test tests/node_server.test.js",
-    "test:python": "python3 -m unittest tests.test_server"
+    "test:python": "python3 -m unittest tests.test_server",
+    "release:patch": "node scripts/release.js patch",
+    "release:minor": "node scripts/release.js minor",
+    "release:major": "node scripts/release.js major"
   },
   "engines": {
     "node": ">=18"
