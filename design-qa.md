@@ -36,6 +36,10 @@
 10. Handoff fix: moved the action to the persistent top bar and kept the overview focused on aggregate context data. The final 1280px evidence is `artifacts/ui-audit/19-copy-handoff-topbar.png`.
 11. Drill-down P1 finding: selecting a phase only filtered the initial Raw list; Raw record clicks were ignored by the Turn inspector and Structured exposed only the lightweight Turn summary.
 12. Drill-down fix: Turn rows now reset the inspector to the whole-turn Summary, while Input context, Agent work, Tool calls, and Final answer establish an explicit phase scope shared by Summary, Structured, Raw, and Related. Raw records open inline and Structured renders every in-scope event as an independent expandable node.
+13. Scope finding: the top bar reads as global session chrome, so a file-scoped action such as `Copy handoff` — and the new tail-command action — did not belong there.
+14. Scope fix: both file-scoped actions now sit on the active-file row of the stream toolbar as `Copy tail ▾` plus `Copy handoff`. The split button copies `tail -F <abs path> | jq -Rr -C --unbuffered 'fromjson? // .'`; the caret menu offers follow, new lines only (`-n 0`), replay from start (`-n +1`), and raw tail (no jq), and the chosen variant persists as the main button's default. Evidence: `artifacts/ui-audit/21-tail-command-menu-1440.png`.
+15. Layout P2 finding (pre-existing, surfaced by 14): `.stream-panel` is a grid whose implicit `auto` column grew to the widest row, so at 1280px the toolbar's right side — previously `Compact / Narrative`, now also `Copy handoff` — was pushed outside the clipped panel. Measured before the fix: panel 637px wide, toolbar 813px, `.file-actions` right edge 909px against a panel right edge of 892px.
+16. Layout fix: `.stream-panel` declares `grid-template-columns: minmax(0, 1fr)`, so every row respects the panel width. At 1280px the file actions wrap under the file name (right edge 461px, inside the panel) and horizontal scrolling stays inside the event stream where the turn ledger already opts into it. Evidence: `artifacts/ui-audit/22-tail-command-1280.png`.
 
 ## Required fidelity surfaces
 
@@ -79,13 +83,16 @@
 - Follow-up browser console after switching payload/event metrics: 0 errors.
 - `Copy handoff` was exercised against the active coding session; the UI confirmed `Handoff copied`, the API supplied the recorded absolute `cwd`, and the browser console reported 0 errors.
 - Turn/phase linkage was exercised against a live 167-event turn: `Tool calls` selected 94 in-scope records, both Raw and Structured rendered all 94, a Raw record opened its exact JSON inline, and the browser console reported 0 errors.
+- `Copy tail` was driven through the Chrome DevTools Protocol against a live session: all four variants produced the expected command for the selected file, the caret menu toggled `aria-expanded`, outside click and `Escape` closed it, the chosen variant persisted to `localStorage` and became the main button's default, an empty date disabled both file actions, and the browser console reported 0 errors.
+- The generated `tail -F … | jq -Rr -C --unbuffered 'fromjson? // .'` command was pasted into a real terminal against a live rollout file and streamed colorized pretty-printed JSON.
 - Residual P3: very small payload categories can round visually to 0%; exact byte values remain available in the inspector.
+- Residual P3: the tail command assumes `jq` is installed and on `PATH`; the `Raw tail (no jq)` variant covers environments without it.
 
 ## Severity result
 
 - P0: 0
 - P1: 0
 - P2: 0
-- P3: 2 documented residuals
+- P3: 3 documented residuals
 
 final result: passed

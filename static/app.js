@@ -1,4 +1,12 @@
 const INSPECTOR_WIDTH_STORAGE_KEY = "jsonl-session-viewer.inspector-width";
+const TAIL_VARIANT_STORAGE_KEY = "jsonl-session-viewer.tail-variant";
+const TAIL_JQ_SUFFIX = `jq -Rr -C --unbuffered 'fromjson? // .'`;
+const TAIL_VARIANTS = [
+  { key: "follow", label: "Follow (tail -F)", args: "-F" },
+  { key: "new", label: "New lines only (-n 0)", args: "-F -n 0" },
+  { key: "replay", label: "Replay from start (-n +1)", args: "-F -n +1" },
+  { key: "raw", label: "Raw tail (no jq)", args: "-F", jq: false },
+];
 const DEFAULT_INSPECTOR_WIDTH = 380;
 const WIDE_INSPECTOR_WIDTH = 720;
 const MIN_INSPECTOR_WIDTH = 320;
@@ -61,6 +69,7 @@ const state = {
   eventOrder: "latest-top",
   inspectorWide: false,
   inspectorWidth: readInspectorWidth(),
+  tailVariant: readTailVariant(),
   truncateAfter: 180,
 };
 
@@ -69,6 +78,10 @@ const el = {
   viewTabs: document.querySelector("#viewTabs"),
   dateInput: document.querySelector("#dateInput"),
   copyHandoffButton: document.querySelector("#copyHandoffButton"),
+  copyTailGroup: document.querySelector("#copyTailGroup"),
+  copyTailButton: document.querySelector("#copyTailButton"),
+  copyTailMenuButton: document.querySelector("#copyTailMenuButton"),
+  copyTailMenu: document.querySelector("#copyTailMenu"),
   refreshButton: document.querySelector("#refreshButton"),
   dateStatus: document.querySelector("#dateStatus"),
   fileList: document.querySelector("#fileList"),
@@ -122,7 +135,7 @@ async function loadFiles() {
   state.expandedTurns = new Set();
   state.selectedLineNo = null;
   state.offset = 0;
-  el.copyHandoffButton.disabled = true;
+  setFileActionsEnabled(false);
   renderEvents();
   renderInspector();
   setStatus("Loading files");
@@ -152,7 +165,7 @@ async function loadInitial() {
   state.selectedTurnId = state.turns[0]?.id || null;
   state.expandedTurns = new Set(state.selectedTurnId ? [state.selectedTurnId] : []);
   state.offset = data.offset || 0;
-  el.copyHandoffButton.disabled = false;
+  setFileActionsEnabled(true);
   renderFiles();
   renderEvents();
   renderInspector();
@@ -1598,6 +1611,110 @@ function clampInspectorWidth(width) {
   return Math.round(Math.min(Math.max(safeWidth, MIN_INSPECTOR_WIDTH), maxWidth));
 }
 
+function readTailVariant() {
+  try {
+    const stored = localStorage.getItem(TAIL_VARIANT_STORAGE_KEY);
+    if (TAIL_VARIANTS.some((variant) => variant.key === stored)) {
+      return stored;
+    }
+  } catch {
+    // Ignore storage failures in restricted browser contexts.
+  }
+  return TAIL_VARIANTS[0].key;
+}
+
+function setTailVariant(key) {
+  const variant = tailVariant(key);
+  state.tailVariant = variant.key;
+  try {
+    localStorage.setItem(TAIL_VARIANT_STORAGE_KEY, variant.key);
+  } catch {
+    // Variant persistence is a convenience; the viewer should still work without it.
+  }
+  renderTailMenu();
+}
+
+function tailVariant(key) {
+  return TAIL_VARIANTS.find((variant) => variant.key === key) || TAIL_VARIANTS[0];
+}
+
+function activeFilePath() {
+  if (!state.selectedFile) {
+    return "";
+  }
+  const known = state.files.find((file) => file.name === state.selectedFile);
+  if (known?.path) {
+    return known.path;
+  }
+  const parts = String(state.selectedDate || "").split("-");
+  if (!state.root || parts.length !== 3) {
+    return "";
+  }
+  return [state.root.replace(/\/+$/, ""), ...parts, state.selectedFile].join("/");
+}
+
+function shellQuotePath(value) {
+  const text = String(value || "");
+  if (/^[A-Za-z0-9._/@:+-]+$/.test(text)) {
+    return text;
+  }
+  return `'${text.replace(/'/g, `'\\''`)}'`;
+}
+
+function tailCommand(key) {
+  const filePath = activeFilePath();
+  if (!filePath) {
+    return "";
+  }
+  const variant = tailVariant(key);
+  const command = `tail ${variant.args} ${shellQuotePath(filePath)}`;
+  return variant.jq === false ? command : `${command} | ${TAIL_JQ_SUFFIX}`;
+}
+
+function renderTailMenu() {
+  el.copyTailMenu.innerHTML = TAIL_VARIANTS.map((variant) => {
+    const active = variant.key === state.tailVariant ? " active" : "";
+    return `
+      <button class="split-menu-item${active}" type="button" role="menuitem" data-tail-variant="${escapeAttr(variant.key)}">
+        ${escapeHtml(variant.label)}
+      </button>
+    `;
+  }).join("");
+  const command = tailCommand(state.tailVariant);
+  el.copyTailButton.title = command || "Select a rollout file to build a tail command";
+}
+
+function setTailMenuOpen(open) {
+  el.copyTailMenu.hidden = !open;
+  el.copyTailMenuButton.setAttribute("aria-expanded", String(open));
+  el.copyTailGroup.classList.toggle("open", open);
+}
+
+async function copyTailCommand(key) {
+  const variant = tailVariant(key);
+  const command = tailCommand(variant.key);
+  if (!command) {
+    setStatus("No rollout file selected");
+    return;
+  }
+  try {
+    await copyText(command, `Tail command copied · ${variant.label}`);
+  } catch {
+    setStatus("Copy failed · copy the command manually");
+    window.prompt("Copy this tail command:", command);
+  }
+}
+
+function setFileActionsEnabled(enabled) {
+  el.copyHandoffButton.disabled = !enabled;
+  el.copyTailButton.disabled = !enabled;
+  el.copyTailMenuButton.disabled = !enabled;
+  if (!enabled) {
+    setTailMenuOpen(false);
+  }
+  renderTailMenu();
+}
+
 function initResizableInspector() {
   if (!el.inspectorResizeHandle) {
     return;
@@ -1701,6 +1818,38 @@ el.turnOverview.addEventListener("click", (event) => {
 
 el.copyHandoffButton.addEventListener("click", async () => {
   await copyText(buildSessionHandoff(), `Handoff copied · ${formatNumber(state.turns.length)} turns`);
+});
+
+el.copyTailButton.addEventListener("click", async () => {
+  setTailMenuOpen(false);
+  await copyTailCommand(state.tailVariant);
+});
+
+el.copyTailMenuButton.addEventListener("click", () => {
+  setTailMenuOpen(el.copyTailMenu.hidden);
+});
+
+el.copyTailMenu.addEventListener("click", async (event) => {
+  const item = event.target.closest("[data-tail-variant]");
+  if (!item) {
+    return;
+  }
+  setTailVariant(item.dataset.tailVariant);
+  setTailMenuOpen(false);
+  await copyTailCommand(state.tailVariant);
+});
+
+document.addEventListener("click", (event) => {
+  if (!el.copyTailMenu.hidden && !el.copyTailGroup.contains(event.target)) {
+    setTailMenuOpen(false);
+  }
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !el.copyTailMenu.hidden) {
+    setTailMenuOpen(false);
+    el.copyTailMenuButton.focus();
+  }
 });
 
 el.eventStream.addEventListener("click", async (event) => {

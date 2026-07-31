@@ -66,6 +66,15 @@ button:hover {
   border-color: var(--accent);
 }
 
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+button:disabled:hover {
+  border-color: var(--border-strong);
+}
+
 button:focus-visible,
 input:focus-visible,
 select:focus-visible,
@@ -223,6 +232,9 @@ h1 {
   min-height: 0;
   height: 100%;
   display: grid;
+  /* Without an explicit minmax(0, 1fr) column the implicit auto column grows to
+     the widest row, pushing toolbar controls outside the clipped panel. */
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto auto auto minmax(0, 1fr);
   overflow: hidden;
 }
@@ -240,6 +252,94 @@ h1 {
 
 .stream-toolbar > div:first-child {
   min-width: 0;
+}
+
+.stream-file-block {
+  min-width: 0;
+}
+
+.stream-file-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.file-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.split-button {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.tail-copy-button,
+.tail-copy-toggle {
+  min-height: 27px;
+  border-color: var(--accent);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.tail-copy-button {
+  padding: 0 9px;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.tail-copy-toggle {
+  margin-left: -1px;
+  min-width: 22px;
+  padding: 0 5px;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  font-size: 10px;
+  line-height: 1;
+}
+
+.split-button.open .tail-copy-toggle {
+  background: var(--accent-soft);
+}
+
+.split-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 20;
+  min-width: 220px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--panel);
+  box-shadow: 0 8px 20px rgba(16, 24, 40, 0.16);
+}
+
+.split-menu-item {
+  min-height: 28px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  text-align: left;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.split-menu-item:hover {
+  background: var(--accent-soft);
+}
+
+.split-menu-item.active {
+  color: var(--accent);
+  font-weight: 700;
 }
 
 .toolbar-controls {
@@ -294,6 +394,8 @@ h1 {
 
 .active-file {
   max-width: 620px;
+  min-width: 0;
+  flex: 0 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
