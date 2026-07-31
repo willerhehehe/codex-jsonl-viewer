@@ -1607,6 +1607,13 @@ h1 {
   display: grid;
   grid-template-columns: minmax(80px, 140px) minmax(0, 1fr);
   gap: 8px;
+  align-items: start;
+}
+
+.json-leaf > .json-key,
+.json-leaf > .json-value {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .json-key {
