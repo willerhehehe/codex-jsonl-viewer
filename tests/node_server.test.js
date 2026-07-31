@@ -5,6 +5,7 @@ const path = require("node:path");
 const test = require("node:test");
 
 const cli = require("../src/cli");
+const releaseAutomation = require("../scripts/release");
 const server = require("../src/session-server");
 
 test("package exposes an npx bin without runtime dependencies", () => {
@@ -32,6 +33,7 @@ test("tag releases are guarded and published through trusted GitHub Actions", ()
   assert.match(workflow, /id-token: write/);
   assert.match(workflow, /github\.ref_name/);
   assert.match(workflow, /npm publish --access public/);
+  assert.equal(releaseAutomation.run(process.execPath, ["-e", ""]), "");
 });
 
 test("default sessions root expands home", () => {

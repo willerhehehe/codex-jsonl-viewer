@@ -5,11 +5,12 @@ const { execFileSync } = require("node:child_process");
 const ALLOWED_RELEASE_TYPES = new Set(["patch", "minor", "major"]);
 
 function run(command, args, options = {}) {
-  return execFileSync(command, args, {
+  const output = execFileSync(command, args, {
     cwd: options.cwd || process.cwd(),
     encoding: "utf8",
     stdio: options.capture ? "pipe" : "inherit",
-  }).trim();
+  });
+  return typeof output === "string" ? output.trim() : "";
 }
 
 function read(command, args) {
@@ -55,4 +56,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { ensureReleaseReady, release };
+module.exports = { ensureReleaseReady, release, run };
