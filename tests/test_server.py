@@ -140,10 +140,13 @@ class ApiTests(unittest.TestCase):
             )
 
             with running_server(root) as base_url:
+                metadata = get_json(f"{base_url}/api/meta")
                 dates = get_json(f"{base_url}/api/dates")
                 files = get_json(f"{base_url}/api/files?date=2026-05-09")
                 initial = get_json(f"{base_url}/api/initial?date=2026-05-09&file=rollout-test.jsonl&limit=2")
 
+            package = json.loads(server.PACKAGE_JSON.read_text(encoding="utf-8"))
+            self.assertEqual(metadata["version"], package["version"])
             self.assertEqual(dates["dates"], ["2026-05-09"])
             self.assertEqual(dates["root"], str(root.resolve()))
             self.assertEqual(files["files"][0]["name"], "rollout-test.jsonl")
@@ -193,10 +196,16 @@ class ApiTests(unittest.TestCase):
                 html = get_text(f"{base_url}/")
                 js = get_text(f"{base_url}/static/app.js")
                 css = get_text(f"{base_url}/static/styles.css")
+                icon = get_text(f"{base_url}/static/icon.svg")
 
             self.assertIn("Codex Session Viewer", html)
+            self.assertIn('id="appVersion"', html)
+            self.assertIn('rel="icon"', html)
             self.assertIn("extractFieldPaths", js)
+            self.assertIn("loadAppMetadata", js)
             self.assertIn(".app-shell", css)
+            self.assertIn(".app-version", css)
+            self.assertIn("<svg", icon)
 
     def test_static_browser_files_include_readability_layout_hooks(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -281,6 +290,10 @@ class ApiTests(unittest.TestCase):
             self.assertIn("renderTurnPhaseSummaryInspector", js)
             self.assertIn("data-inspect-turn-line", js)
             self.assertIn("turn-raw-detail", css)
+            self.assertRegex(
+                css,
+                r"\.turn-raw-detail \.raw-json\s*\{[^}]*overflow: auto;",
+            )
             self.assertIn("turn-record-node", css)
             self.assertIn("turn-phase.selected", css)
 

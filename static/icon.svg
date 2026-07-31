@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Codex Session Viewer">
+  <rect x="4" y="4" width="56" height="56" rx="14" fill="#2563eb"/>
+  <path d="M18 17h28v8H26v7h20v8H26v7h20" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="18" cy="21" r="3" fill="#bfdbfe"/>
+  <circle cx="18" cy="36" r="3" fill="#fbbf24"/>
+  <circle cx="18" cy="51" r="3" fill="#86efac"/>
+</svg>

@@ -6,6 +6,19 @@ const { URL } = require("node:url");
 
 const DEFAULT_ROOT = "~/.codex/sessions";
 const STATIC_DIR = path.resolve(__dirname, "..", "static");
+const PACKAGE_JSON = path.resolve(__dirname, "..", "package.json");
+
+function appMetadata() {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(PACKAGE_JSON, "utf8"));
+    return {
+      name: String(pkg.name || "codex-jsonl-viewer"),
+      version: String(pkg.version || "dev"),
+    };
+  } catch {
+    return { name: "codex-jsonl-viewer", version: "dev" };
+  }
+}
 
 function resolveSessionsRoot(rootText = DEFAULT_ROOT) {
   if (rootText === "~") {
@@ -514,7 +527,9 @@ function handleRequest(request, response, sessionsRoot, staticRoot) {
     if (request.method !== "GET") {
       throw httpError(405, "method not allowed");
     }
-    if (requestUrl.pathname === "/api/dates") {
+    if (requestUrl.pathname === "/api/meta") {
+      writeJson(response, appMetadata());
+    } else if (requestUrl.pathname === "/api/dates") {
       writeJson(response, {
         root: sessionsRoot,
         dates: listDates(sessionsRoot),
@@ -763,6 +778,7 @@ function contentType(filePath) {
     ".html": "text/html; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
     ".json": "application/json; charset=utf-8",
+    ".svg": "image/svg+xml",
   }[extension] || "application/octet-stream";
 }
 
@@ -814,6 +830,7 @@ module.exports = {
   DEFAULT_ROOT,
   STATIC_DIR,
   JsonlTailer,
+  appMetadata,
   createHttpServer,
   dateToDir,
   listDates,

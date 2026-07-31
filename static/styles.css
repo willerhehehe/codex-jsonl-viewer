@@ -116,6 +116,34 @@ select {
   min-width: 0;
 }
 
+.brand-title-line {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 5px;
+}
+
+.brand-title-line h1 {
+  margin: 0;
+}
+
+.app-version {
+  flex: 0 0 auto;
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  padding: 1px 6px;
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.app-version:empty {
+  display: none;
+}
+
 .view-tabs {
   align-self: stretch;
   display: flex;
@@ -1283,6 +1311,7 @@ h1 {
 .turn-raw-detail {
   min-width: 0;
   margin: -1px 0 5px;
+  overflow: hidden;
   border: 1px solid var(--accent);
   border-top: 0;
   border-radius: 0 0 6px 6px;
@@ -1304,8 +1333,11 @@ h1 {
 }
 
 .turn-raw-detail .raw-json {
-  max-height: 420px;
+  max-width: 100%;
+  max-height: min(420px, 50vh);
   margin: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 
 .turn-record-tree {

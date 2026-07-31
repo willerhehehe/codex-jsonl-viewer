@@ -210,14 +210,20 @@ test("HTTP API serves dates, initial records, and static assets", async () => {
     await listen(httpd);
     const { port } = httpd.address();
     const baseUrl = `http://127.0.0.1:${port}`;
+    const metadata = await getJson(`${baseUrl}/api/meta`);
     const dates = await getJson(`${baseUrl}/api/dates`);
     const initial = await getJson(`${baseUrl}/api/initial?date=2026-05-09&file=rollout-test.jsonl&limit=2`);
     const html = await getText(`${baseUrl}/`);
+    const icon = await getText(`${baseUrl}/static/icon.svg`);
 
+    assert.equal(metadata.version, require("../package.json").version);
     assert.deepEqual(dates.dates, ["2026-05-09"]);
     assert.equal(dates.root, path.resolve(root));
     assert.deepEqual(initial.records.map((item) => item.record.index), [2, 3]);
     assert.match(html, /Codex Session Viewer/);
+    assert.match(html, /id="appVersion"/);
+    assert.match(html, /rel="icon"/);
+    assert.match(icon, /<svg/);
   } finally {
     await close(httpd);
     fs.rmSync(root, { recursive: true, force: true });

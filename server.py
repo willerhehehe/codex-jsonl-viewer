@@ -14,6 +14,18 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 DEFAULT_ROOT = "~/.codex/sessions"
 STATIC_DIR = Path(__file__).with_name("static")
+PACKAGE_JSON = Path(__file__).with_name("package.json")
+
+
+def app_metadata() -> dict[str, str]:
+    try:
+        package = json.loads(PACKAGE_JSON.read_text(encoding="utf-8"))
+        return {
+            "name": str(package.get("name") or "codex-jsonl-viewer"),
+            "version": str(package.get("version") or "dev"),
+        }
+    except (OSError, json.JSONDecodeError):
+        return {"name": "codex-jsonl-viewer", "version": "dev"}
 
 
 def resolve_sessions_root(root_text: str) -> Path:
@@ -448,7 +460,9 @@ class JsonlViewerHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         try:
-            if parsed.path == "/api/dates":
+            if parsed.path == "/api/meta":
+                self._write_json(app_metadata())
+            elif parsed.path == "/api/dates":
                 self._handle_dates()
             elif parsed.path == "/api/files":
                 self._handle_files(parsed.query)

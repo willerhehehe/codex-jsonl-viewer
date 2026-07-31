@@ -74,6 +74,7 @@ const state = {
 };
 
 const el = {
+  appVersion: document.querySelector("#appVersion"),
   rootPath: document.querySelector("#rootPath"),
   viewTabs: document.querySelector("#viewTabs"),
   dateInput: document.querySelector("#dateInput"),
@@ -112,6 +113,15 @@ async function api(path) {
     throw new Error(body.error || response.statusText);
   }
   return body;
+}
+
+async function loadAppMetadata() {
+  const data = await api("/api/meta");
+  if (!data.version) {
+    return;
+  }
+  el.appVersion.textContent = `v${data.version}`;
+  document.title = `Codex Session Viewer v${data.version}`;
 }
 
 async function loadDates() {
@@ -2049,6 +2059,10 @@ async function copyText(text, statusText = "Copied") {
 setInspectorWidth(state.inspectorWidth, false);
 initResizableInspector();
 renderViewMode();
+
+loadAppMetadata().catch(() => {
+  el.appVersion.textContent = "";
+});
 
 loadDates().catch((error) => {
   el.rootPath.textContent = error.message;

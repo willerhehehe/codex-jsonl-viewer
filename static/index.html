@@ -4,13 +4,17 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Codex Session Viewer</title>
+    <link rel="icon" type="image/svg+xml" href="/static/icon.svg">
     <link rel="stylesheet" href="/static/styles.css">
   </head>
   <body>
     <div class="app-shell">
       <header class="topbar">
         <div class="brand-block">
-          <h1>Codex Session Viewer</h1>
+          <div class="brand-title-line">
+            <h1>Codex Session Viewer</h1>
+            <span id="appVersion" class="app-version" aria-label="Application version"></span>
+          </div>
           <div id="rootPath" class="muted path-text"></div>
         </div>
         <nav id="viewTabs" class="view-tabs" aria-label="Viewer mode">
