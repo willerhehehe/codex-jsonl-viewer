@@ -1555,6 +1555,18 @@ h1 {
   word-break: normal;
 }
 
+/* A fenced block contains a semantic <code> element. Reset the inline-code
+   chip treatment so the block keeps its high-contrast dark presentation. */
+.rich-markdown .rich-code-block > code {
+  display: block;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+}
+
 .related-list {
   display: grid;
   gap: 6px;

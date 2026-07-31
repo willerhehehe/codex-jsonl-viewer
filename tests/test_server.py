@@ -344,6 +344,9 @@ class ApiTests(unittest.TestCase):
             self.assertIn("rich-embedded-json", js)
             self.assertIn("rich-markdown", css)
             self.assertIn("rich-code-block", css)
+            self.assertIn(".rich-markdown .rich-code-block > code", css)
+            self.assertIn("background: transparent", css)
+            self.assertIn("color: inherit", css)
             self.assertIn("rich-json", css)
 
 
