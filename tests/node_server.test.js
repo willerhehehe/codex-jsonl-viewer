@@ -7,6 +7,7 @@ const test = require("node:test");
 const cli = require("../src/cli");
 const releaseAutomation = require("../scripts/release");
 const server = require("../src/session-server");
+const updates = require("../src/update-manager");
 
 test("package exposes an npx bin without runtime dependencies", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
@@ -17,6 +18,7 @@ test("package exposes an npx bin without runtime dependencies", () => {
   assert.equal(pkg.scripts["release:patch"], "node scripts/release.js patch");
   assert.equal(pkg.scripts["release:minor"], "node scripts/release.js minor");
   assert.equal(pkg.scripts["release:major"], "node scripts/release.js major");
+  assert.doesNotMatch(pkg.scripts.test, /python/i);
 });
 
 test("tag releases are guarded and published through trusted GitHub Actions", () => {
@@ -50,6 +52,101 @@ test("CLI defaults to the Codex sessions root and local URL port", () => {
   assert.equal(options.port, 8765);
   assert.equal(options.open, false);
   assert.equal(options.strictPort, false);
+});
+
+test("CLI preserves runtime arguments when building global and npx restarts", () => {
+  const options = {
+    root: "/tmp/codex sessions",
+    host: "127.0.0.1",
+    port: 9876,
+    open: false,
+    strictPort: true,
+  };
+  const update = {
+    installMode: "global",
+    packageName: "codex-jsonl-viewer",
+    targetVersion: "0.3.0",
+  };
+  const globalSpec = cli.buildRestartSpec(update, options, "/tmp/viewer.js");
+  const npxSpec = cli.buildRestartSpec({ ...update, installMode: "npx" }, options, "/tmp/viewer.js");
+
+  assert.equal(globalSpec.command, process.execPath);
+  assert.deepEqual(globalSpec.args, [
+    "/tmp/viewer.js",
+    "--root", "/tmp/codex sessions",
+    "--host", "127.0.0.1",
+    "--port", "9876",
+    "--no-open",
+    "--strict-port",
+  ]);
+  assert.match(npxSpec.command, /^npx(?:\.cmd)?$/);
+  assert.deepEqual(npxSpec.args.slice(0, 2), ["-y", "codex-jsonl-viewer@0.3.0"]);
+  assert.deepEqual(npxSpec.args.slice(2), globalSpec.args.slice(1));
+});
+
+test("update manager checks semver, caches registry results, and runs a global update", async () => {
+  let registryCalls = 0;
+  const commands = [];
+  const restarts = [];
+  const manager = updates.createUpdateManager({
+    currentVersion: "0.2.1",
+    installMode: "global",
+    latestVersionProvider: async () => {
+      registryCalls += 1;
+      return "0.3.0";
+    },
+    commandRunner: async (command, args) => commands.push({ command, args }),
+    restartProcess: async (update) => restarts.push(update),
+    now: () => Date.parse("2026-07-31T06:00:00Z"),
+  });
+
+  const first = await manager.getStatus();
+  const cached = await manager.getStatus();
+  assert.equal(first.updateAvailable, true);
+  assert.equal(cached.latestVersion, "0.3.0");
+  assert.equal(registryCalls, 1);
+
+  const started = await manager.startUpdate();
+  assert.equal(started.phase, "installing");
+  await manager.waitForUpdate();
+
+  assert.equal(registryCalls, 2);
+  assert.deepEqual(commands, [{
+    command: updates.npmCommand(),
+    args: ["install", "-g", "codex-jsonl-viewer@0.3.0"],
+  }]);
+  assert.deepEqual(restarts, [{
+    installMode: "global",
+    packageName: "codex-jsonl-viewer",
+    targetVersion: "0.3.0",
+  }]);
+  assert.equal(manager.snapshot().phase, "restarting");
+});
+
+test("source installs expose a manual command instead of modifying the checkout", async () => {
+  const manager = updates.createUpdateManager({
+    currentVersion: "0.2.1",
+    installMode: "source",
+    latestVersionProvider: async () => "0.2.2",
+    restartProcess: async () => assert.fail("source mode must not restart"),
+  });
+
+  const status = await manager.getStatus();
+  assert.equal(status.canAutoUpdate, false);
+  assert.equal(status.manualCommand, "git pull --ff-only && npm test");
+  await assert.rejects(
+    manager.startUpdate(),
+    (error) => error.status === 409 && error.manualCommand === status.manualCommand,
+  );
+});
+
+test("semantic versions and install modes are classified deterministically", () => {
+  assert.equal(updates.compareVersions("0.2.1", "0.2.2"), -1);
+  assert.equal(updates.compareVersions("1.0.0", "1.0.0-beta.2"), 1);
+  assert.equal(updates.detectInstallMode("/tmp/.npm/_npx/abc/node_modules/codex-jsonl-viewer", {}), "npx");
+  assert.equal(updates.detectInstallMode("/opt/homebrew/lib/node_modules/codex-jsonl-viewer", {}), "global");
+  assert.equal(server.isLocalHostHeader("127.0.0.1:8765"), true);
+  assert.equal(server.isLocalHostHeader("attacker.example"), false);
 });
 
 test("CLI automatically falls back when the requested port is busy", async () => {
@@ -205,25 +302,59 @@ test("HTTP API serves dates, initial records, and static assets", async () => {
     [0, 1, 2, 3].map((index) => JSON.stringify({ index, type: "event_msg" })).join("\n") + "\n",
   );
 
-  const httpd = server.createHttpServer({ host: "127.0.0.1", port: 0, root });
+  let updateStarts = 0;
+  const updateStatus = {
+    currentVersion: require("../package.json").version,
+    latestVersion: "0.3.0",
+    updateAvailable: true,
+    installMode: "global",
+    canAutoUpdate: true,
+    phase: "idle",
+    error: "",
+    targetVersion: "",
+    manualCommand: "npm install -g codex-jsonl-viewer@latest",
+  };
+  const updateManager = {
+    getStatus: async () => updateStatus,
+    startUpdate: async () => {
+      updateStarts += 1;
+      return { ...updateStatus, phase: "installing", targetVersion: "0.3.0" };
+    },
+  };
+  const httpd = server.createHttpServer({ host: "127.0.0.1", port: 0, root, updateManager });
   try {
     await listen(httpd);
     const { port } = httpd.address();
     const baseUrl = `http://127.0.0.1:${port}`;
     const metadata = await getJson(`${baseUrl}/api/meta`);
+    const availableUpdate = await getJson(`${baseUrl}/api/update-status`);
     const dates = await getJson(`${baseUrl}/api/dates`);
     const initial = await getJson(`${baseUrl}/api/initial?date=2026-05-09&file=rollout-test.jsonl&limit=2`);
     const html = await getText(`${baseUrl}/`);
     const icon = await getText(`${baseUrl}/static/icon.svg`);
+    const app = await getText(`${baseUrl}/static/app.js`);
+    const rejectedUpdate = await requestJson(`${baseUrl}/api/update`, { method: "POST" });
+    const acceptedUpdate = await requestJson(`${baseUrl}/api/update`, {
+      method: "POST",
+      headers: { "X-Codex-Update-Token": metadata.updateToken },
+    });
 
     assert.equal(metadata.version, require("../package.json").version);
+    assert.ok(metadata.updateToken);
+    assert.equal(availableUpdate.latestVersion, "0.3.0");
     assert.deepEqual(dates.dates, ["2026-05-09"]);
     assert.equal(dates.root, path.resolve(root));
     assert.deepEqual(initial.records.map((item) => item.record.index), [2, 3]);
     assert.match(html, /Codex Session Viewer/);
     assert.match(html, /id="appVersion"/);
+    assert.match(html, /id="updateButton"/);
     assert.match(html, /rel="icon"/);
     assert.match(icon, /<svg/);
+    assert.match(app, /\/api\/update-status/);
+    assert.equal(rejectedUpdate.status, 403);
+    assert.equal(acceptedUpdate.status, 202);
+    assert.equal(acceptedUpdate.body.phase, "installing");
+    assert.equal(updateStarts, 1);
   } finally {
     await close(httpd);
     fs.rmSync(root, { recursive: true, force: true });
@@ -358,4 +489,9 @@ async function getText(url) {
     assert.fail(await response.text());
   }
   return response.text();
+}
+
+async function requestJson(url, options) {
+  const response = await fetch(url, options);
+  return { status: response.status, body: await response.json() };
 }

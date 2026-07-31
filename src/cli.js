@@ -1,5 +1,7 @@
 const { spawn } = require("node:child_process");
+const path = require("node:path");
 const { DEFAULT_ROOT, createHttpServer, resolveSessionsRoot } = require("./session-server");
+const { npxCommand } = require("./update-manager");
 
 function parseArgs(argv) {
   const options = {
@@ -58,7 +60,9 @@ function runCli(argv = process.argv.slice(2), output = process.stdout, errorOutp
     return 0;
   }
 
-  const server = createHttpServer(options);
+  let server;
+  const restartProcess = (update) => restartCli(server, options, update);
+  server = createHttpServer({ ...options, restartProcess });
   const startPort = options.port;
   const onListening = () => {
     const address = server.address();
@@ -128,8 +132,76 @@ function openBrowser(url) {
   child.unref();
 }
 
+function serializeCliArgs(options) {
+  const args = [
+    "--root", options.root,
+    "--host", options.host,
+    "--port", String(options.port),
+    "--no-open",
+  ];
+  if (options.strictPort) {
+    args.push("--strict-port");
+  }
+  return args;
+}
+
+function buildRestartSpec(update, options, entryPath = path.resolve(__dirname, "..", "bin", "codex-jsonl-viewer.js")) {
+  const cliArgs = serializeCliArgs(options);
+  if (update.installMode === "npx") {
+    return {
+      command: npxCommand(),
+      args: ["-y", `${update.packageName}@${update.targetVersion}`, ...cliArgs],
+      cwd: process.cwd(),
+      host: options.host,
+      port: options.port,
+    };
+  }
+  return {
+    command: process.execPath,
+    args: [entryPath, ...cliArgs],
+    cwd: process.cwd(),
+    host: options.host,
+    port: options.port,
+  };
+}
+
+async function restartCli(server, options, update) {
+  const address = server.address();
+  const restartOptions = {
+    ...options,
+    port: typeof address === "object" && address ? address.port : options.port,
+    open: false,
+    strictPort: true,
+  };
+  const spec = buildRestartSpec(update, restartOptions);
+  const helperPath = path.join(__dirname, "restart-helper.js");
+  await spawnDetached(process.execPath, [helperPath, JSON.stringify(spec)]);
+  await new Promise((resolve) => {
+    server.close(() => resolve());
+    if (typeof server.closeAllConnections === "function") {
+      server.closeAllConnections();
+    }
+  });
+}
+
+function spawnDetached(command, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      detached: true,
+      stdio: "ignore",
+    });
+    child.once("error", reject);
+    child.once("spawn", () => {
+      child.unref();
+      resolve();
+    });
+  });
+}
+
 module.exports = {
+  buildRestartSpec,
   parseArgs,
   runCli,
+  serializeCliArgs,
   usage,
 };

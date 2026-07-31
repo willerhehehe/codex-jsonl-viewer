@@ -2,7 +2,9 @@ const fs = require("node:fs");
 const http = require("node:http");
 const os = require("node:os");
 const path = require("node:path");
+const crypto = require("node:crypto");
 const { URL } = require("node:url");
+const { createUpdateManager, detectInstallMode } = require("./update-manager");
 
 const DEFAULT_ROOT = "~/.codex/sessions";
 const STATIC_DIR = path.resolve(__dirname, "..", "static");
@@ -508,51 +510,132 @@ class JsonlTailer {
   }
 }
 
-function createHttpServer({ host = "127.0.0.1", port = 8765, root = DEFAULT_ROOT, staticDir = STATIC_DIR } = {}) {
+function createHttpServer({
+  host = "127.0.0.1",
+  port = 8765,
+  root = DEFAULT_ROOT,
+  staticDir = STATIC_DIR,
+  installMode = detectInstallMode(),
+  restartProcess = null,
+  updateManager = null,
+} = {}) {
   const sessionsRoot = resolveSessionsRoot(root);
   const staticRoot = path.resolve(staticDir);
+  const metadata = appMetadata();
+  const updates = updateManager || createUpdateManager({
+    currentVersion: metadata.version,
+    installMode,
+    restartProcess,
+  });
+  const updateToken = crypto.randomBytes(24).toString("base64url");
+  const context = { sessionsRoot, staticRoot, metadata, updates, updateToken };
   const server = http.createServer((request, response) => {
-    handleRequest(request, response, sessionsRoot, staticRoot);
+    handleRequest(request, response, context);
   });
   server.sessionsRoot = sessionsRoot;
   server.staticDir = staticRoot;
+  server.updateManager = updates;
   server.host = host;
   server.port = port;
   return server;
 }
 
-function handleRequest(request, response, sessionsRoot, staticRoot) {
+function handleRequest(request, response, context) {
+  const { sessionsRoot, staticRoot, metadata, updates, updateToken } = context;
   const requestUrl = new URL(request.url, "http://127.0.0.1");
   try {
-    if (request.method !== "GET") {
-      throw httpError(405, "method not allowed");
-    }
     if (requestUrl.pathname === "/api/meta") {
-      writeJson(response, appMetadata());
+      requireMethod(request, "GET");
+      writeJson(response, { ...metadata, updateToken });
+    } else if (requestUrl.pathname === "/api/update-status") {
+      requireMethod(request, "GET");
+      handleAsyncJson(response, updates.getStatus({ force: requestUrl.searchParams.get("force") === "1" }));
+    } else if (requestUrl.pathname === "/api/update") {
+      requireMethod(request, "POST");
+      authorizeUpdateRequest(request, updateToken);
+      handleAsyncJson(response, updates.startUpdate(), 202);
     } else if (requestUrl.pathname === "/api/dates") {
+      requireMethod(request, "GET");
       writeJson(response, {
         root: sessionsRoot,
         dates: listDates(sessionsRoot),
         today: formatLocalDate(new Date()),
       });
     } else if (requestUrl.pathname === "/api/files") {
+      requireMethod(request, "GET");
       const dateText = requiredParam(requestUrl, "date");
       writeJson(response, { date: dateText, files: listRolloutFiles(sessionsRoot, dateText) });
     } else if (requestUrl.pathname === "/api/initial") {
+      requireMethod(request, "GET");
       handleInitial(requestUrl, response, sessionsRoot);
     } else if (requestUrl.pathname === "/api/turns") {
+      requireMethod(request, "GET");
       handleTurns(requestUrl, response, sessionsRoot);
     } else if (requestUrl.pathname === "/api/turn-events") {
+      requireMethod(request, "GET");
       handleTurnEvents(requestUrl, response, sessionsRoot);
     } else if (requestUrl.pathname === "/api/stream") {
+      requireMethod(request, "GET");
       handleStream(requestUrl, request, response, sessionsRoot);
     } else {
+      requireMethod(request, "GET");
       handleStatic(requestUrl.pathname, response, staticRoot);
     }
   } catch (error) {
-    const status = error.status || 500;
-    writeJson(response, { error: error.message }, status);
+    writeHttpError(response, error);
   }
+}
+
+function handleAsyncJson(response, promise, status = 200) {
+  promise
+    .then((payload) => {
+      if (!response.writableEnded) {
+        writeJson(response, payload, status);
+      }
+    })
+    .catch((error) => {
+      if (!response.writableEnded) {
+        writeHttpError(response, error);
+      }
+    });
+}
+
+function requireMethod(request, method) {
+  if (request.method !== method) {
+    throw httpError(405, "method not allowed");
+  }
+}
+
+function authorizeUpdateRequest(request, expectedToken) {
+  if (!isLoopbackAddress(request.socket.remoteAddress)) {
+    throw httpError(403, "automatic updates are only available from this computer");
+  }
+  if (!isLocalHostHeader(request.headers.host)) {
+    throw httpError(403, "automatic updates require a localhost URL");
+  }
+  const suppliedToken = String(request.headers["x-codex-update-token"] || "");
+  const supplied = Buffer.from(suppliedToken);
+  const expected = Buffer.from(expectedToken);
+  if (supplied.length !== expected.length || !crypto.timingSafeEqual(supplied, expected)) {
+    throw httpError(403, "invalid update token");
+  }
+}
+
+function isLocalHostHeader(hostHeader = "") {
+  try {
+    const hostname = new URL(`http://${hostHeader}`).hostname;
+    return hostname === "localhost"
+      || hostname === "[::1]"
+      || hostname.startsWith("127.");
+  } catch {
+    return false;
+  }
+}
+
+function isLoopbackAddress(address = "") {
+  return address === "127.0.0.1"
+    || address === "::1"
+    || address.startsWith("::ffff:127.");
 }
 
 function handleTurns(requestUrl, response, sessionsRoot) {
@@ -641,6 +724,7 @@ function handleStatic(rawPath, response, staticRoot) {
   response.writeHead(200, {
     "Content-Type": contentType(filePath),
     "Content-Length": body.length,
+    "Cache-Control": "no-cache",
   });
   response.end(body);
 }
@@ -650,8 +734,18 @@ function writeJson(response, payload, status = 200) {
   response.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
     "Content-Length": body.length,
+    "Cache-Control": "no-store",
   });
   response.end(body);
+}
+
+function writeHttpError(response, error) {
+  const status = error.status || 500;
+  const payload = { error: error.message };
+  if (error.manualCommand) {
+    payload.manualCommand = error.manualCommand;
+  }
+  writeJson(response, payload, status);
 }
 
 function readTailBytes(filePath, lineLimit) {
@@ -831,10 +925,13 @@ module.exports = {
   STATIC_DIR,
   JsonlTailer,
   appMetadata,
+  authorizeUpdateRequest,
   createHttpServer,
   dateToDir,
   listDates,
   listRolloutFiles,
+  isLocalHostHeader,
+  isLoopbackAddress,
   parseJsonlLine,
   readJsonlRange,
   readRecentJsonl,

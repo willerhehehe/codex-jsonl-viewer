@@ -76,8 +76,7 @@
 
 ## Functional verification
 
-- `npm test`: Node 12/12 passed; Python 21/21 passed.
-- Python compile check passed as part of the test suite.
+- `npm test`: Node test suite passed.
 - `git diff --check`: passed.
 - Browser console after the primary journey: 0 errors.
 - Follow-up browser console after switching payload/event metrics: 0 errors.

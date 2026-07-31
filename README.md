@@ -18,6 +18,7 @@ It reads Codex session files from `~/.codex/sessions/YYYY/MM/DD`, renders each J
 - Expand all / collapse all controls for structured JSON.
 - Resizable inspector pane and latest-top / latest-bottom ordering.
 - Rich rendering for embedded JSON strings, Markdown-style text, and fenced code blocks in tool outputs.
+- In-app npm update checks with a one-click, parameter-preserving restart for global and `npx` launches.
 
 ## Quick Start
 
@@ -70,17 +71,22 @@ node bin/codex-jsonl-viewer.js
 - Node.js 18+
 - No runtime npm dependencies
 
-The repository also includes the original Python server as a fallback:
-
-```bash
-python3 server.py --port 8765
-```
-
 ## Verify
 
 ```bash
 npm test
 ```
+
+## In-app updates
+
+The header checks npm for a newer version without blocking startup. When an
+update is available, click the version badge and confirm to install or warm the
+new package, restart the local server with the same root, host, and port, and
+reload the page automatically. Source checkouts are never modified; development
+mode shows a manual update command instead.
+
+The update action accepts only localhost requests carrying the per-process
+update token. Failed installs leave the currently running server available.
 
 ## Release
 

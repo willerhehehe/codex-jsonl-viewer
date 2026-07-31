@@ -1,5 +1,6 @@
 const INSPECTOR_WIDTH_STORAGE_KEY = "jsonl-session-viewer.inspector-width";
 const TAIL_VARIANT_STORAGE_KEY = "jsonl-session-viewer.tail-variant";
+const UPDATE_TARGET_STORAGE_KEY = "jsonl-session-viewer.update-target";
 const TAIL_JQ_SUFFIX = `jq -Rr -C --unbuffered 'fromjson? // .'`;
 const TAIL_VARIANTS = [
   { key: "follow", label: "Follow (tail -F)", args: "-F" },
@@ -71,10 +72,15 @@ const state = {
   inspectorWidth: readInspectorWidth(),
   tailVariant: readTailVariant(),
   truncateAfter: 180,
+  appVersion: "",
+  updateToken: "",
+  updateStatus: null,
+  updatePollTimer: null,
 };
 
 const el = {
   appVersion: document.querySelector("#appVersion"),
+  updateButton: document.querySelector("#updateButton"),
   rootPath: document.querySelector("#rootPath"),
   viewTabs: document.querySelector("#viewTabs"),
   dateInput: document.querySelector("#dateInput"),
@@ -106,11 +112,13 @@ const el = {
   inspectorContent: document.querySelector("#inspectorContent"),
 };
 
-async function api(path) {
-  const response = await fetch(path);
+async function api(path, options = {}) {
+  const response = await fetch(path, options);
   const body = await response.json();
   if (!response.ok) {
-    throw new Error(body.error || response.statusText);
+    const error = new Error(body.error || response.statusText);
+    Object.assign(error, body);
+    throw error;
   }
   return body;
 }
@@ -120,8 +128,114 @@ async function loadAppMetadata() {
   if (!data.version) {
     return;
   }
+  state.appVersion = data.version;
+  state.updateToken = data.updateToken || "";
   el.appVersion.textContent = `v${data.version}`;
   document.title = `Codex Session Viewer v${data.version}`;
+  if (sessionStorage.getItem(UPDATE_TARGET_STORAGE_KEY) === data.version) {
+    sessionStorage.removeItem(UPDATE_TARGET_STORAGE_KEY);
+  }
+}
+
+async function loadUpdateStatus({ force = false } = {}) {
+  const data = await api(`/api/update-status${force ? "?force=1" : ""}`);
+  state.updateStatus = data;
+  renderUpdateStatus();
+  return data;
+}
+
+function renderUpdateStatus() {
+  const update = state.updateStatus;
+  el.updateButton.classList.remove("is-busy", "is-error");
+  if (!update?.updateAvailable) {
+    el.updateButton.hidden = true;
+    return;
+  }
+  el.updateButton.hidden = false;
+  el.updateButton.disabled = false;
+  el.updateButton.textContent = `v${update.latestVersion} available`;
+  el.updateButton.title = update.canAutoUpdate
+    ? `Update to v${update.latestVersion} and restart`
+    : `Automatic update unavailable in ${update.installMode} mode; click for the command`;
+
+  if (update.phase === "installing") {
+    el.updateButton.textContent = `Updating to v${update.targetVersion}…`;
+    el.updateButton.disabled = true;
+    el.updateButton.classList.add("is-busy");
+  } else if (update.phase === "restarting") {
+    el.updateButton.textContent = "Restarting…";
+    el.updateButton.disabled = true;
+    el.updateButton.classList.add("is-busy");
+  } else if (update.phase === "failed" && update.error) {
+    el.updateButton.textContent = `Retry v${update.latestVersion}`;
+    el.updateButton.title = update.error;
+    el.updateButton.classList.add("is-error");
+  }
+}
+
+async function requestUpdate() {
+  const update = state.updateStatus || await loadUpdateStatus({ force: true });
+  if (!update.updateAvailable) {
+    return;
+  }
+  if (!update.canAutoUpdate) {
+    window.prompt("Run this command to update:", update.manualCommand);
+    return;
+  }
+  const confirmed = window.confirm(
+    `Update Codex Session Viewer from v${update.currentVersion} to v${update.latestVersion} and restart?`,
+  );
+  if (!confirmed) {
+    return;
+  }
+
+  try {
+    const result = await api("/api/update", {
+      method: "POST",
+      headers: { "X-Codex-Update-Token": state.updateToken },
+    });
+    state.updateStatus = result;
+    renderUpdateStatus();
+    const targetVersion = result.targetVersion || result.latestVersion;
+    sessionStorage.setItem(UPDATE_TARGET_STORAGE_KEY, targetVersion);
+    monitorUpdate(targetVersion);
+  } catch (error) {
+    if (error.manualCommand) {
+      window.prompt(`${error.message}. Run this command instead:`, error.manualCommand);
+      return;
+    }
+    window.alert(error.message);
+    loadUpdateStatus().catch(() => {});
+  }
+}
+
+function monitorUpdate(targetVersion) {
+  clearTimeout(state.updatePollTimer);
+  const poll = async () => {
+    try {
+      const metadata = await api("/api/meta");
+      if (metadata.version === targetVersion) {
+        sessionStorage.removeItem(UPDATE_TARGET_STORAGE_KEY);
+        window.location.reload();
+        return;
+      }
+      const update = await loadUpdateStatus();
+      if (update.phase === "failed") {
+        window.alert(update.error || "Update failed");
+        return;
+      }
+    } catch {
+      state.updateStatus = {
+        ...(state.updateStatus || {}),
+        updateAvailable: true,
+        targetVersion,
+        phase: "restarting",
+      };
+      renderUpdateStatus();
+    }
+    state.updatePollTimer = setTimeout(poll, 1000);
+  };
+  state.updatePollTimer = setTimeout(poll, 500);
 }
 
 async function loadDates() {
@@ -2023,8 +2137,10 @@ el.dateInput.addEventListener("change", async () => {
 });
 
 el.refreshButton.addEventListener("click", async () => {
-  await loadDates();
+  await Promise.all([loadDates(), loadUpdateStatus({ force: true }).catch(() => null)]);
 });
+
+el.updateButton.addEventListener("click", requestUpdate);
 
 el.searchInput.addEventListener("input", () => {
   state.query = el.searchInput.value.trim().toLowerCase();
@@ -2060,9 +2176,18 @@ setInspectorWidth(state.inspectorWidth, false);
 initResizableInspector();
 renderViewMode();
 
-loadAppMetadata().catch(() => {
-  el.appVersion.textContent = "";
-});
+loadAppMetadata()
+  .then(() => loadUpdateStatus().catch(() => {
+    el.updateButton.hidden = true;
+  }))
+  .catch(() => {
+    el.appVersion.textContent = "";
+    el.updateButton.hidden = true;
+  });
+
+setInterval(() => {
+  loadUpdateStatus().catch(() => {});
+}, 30 * 60 * 1000);
 
 loadDates().catch((error) => {
   el.rootPath.textContent = error.message;

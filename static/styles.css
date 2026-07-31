@@ -144,6 +144,37 @@ select {
   display: none;
 }
 
+.update-button {
+  flex: 0 0 auto;
+  border-color: #a7f3d0;
+  border-radius: 999px;
+  background: #ecfdf3;
+  padding: 1px 7px;
+  color: #047857;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.update-button:hover {
+  border-color: #6ee7b7;
+  background: #d1fae5;
+}
+
+.update-button.is-busy {
+  border-color: #fde68a;
+  background: #fffbeb;
+  color: #a16207;
+  cursor: wait;
+}
+
+.update-button.is-error {
+  border-color: #fecaca;
+  background: #fef2f2;
+  color: #b42318;
+}
+
 .view-tabs {
   align-self: stretch;
   display: flex;
