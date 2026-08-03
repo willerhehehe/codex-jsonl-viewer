@@ -90,6 +90,7 @@ button:disabled:hover {
 button:focus-visible,
 input:focus-visible,
 select:focus-visible,
+summary:focus-visible,
 [role="separator"]:focus-visible {
   outline: 2px solid #93c5fd;
   outline-offset: 1px;
@@ -1584,54 +1585,142 @@ h1 {
 
 .json-tree {
   display: grid;
-  gap: 4px;
+  gap: 0;
+  min-width: max-content;
+  padding: 2px 0 12px;
+  color: #344054;
+  font-size: 12px;
+  line-height: 1.55;
 }
 
 .json-node {
-  border-left: 1px solid var(--border);
-  padding-left: 8px;
+  min-width: 0;
 }
 
 .json-node summary {
+  display: flex;
+  min-height: 24px;
+  align-items: baseline;
+  width: fit-content;
+  max-width: 100%;
+  border-radius: 4px;
+  padding: 2px 5px 2px 2px;
   cursor: pointer;
+  list-style: none;
+  white-space: nowrap;
+}
+
+.json-node summary::-webkit-details-marker {
+  display: none;
+}
+
+.json-node summary::before {
+  content: "▸";
+  flex: 0 0 14px;
+  width: 14px;
+  color: #7b8493;
+  font-size: 12px;
+  transform-origin: 45% 50%;
+  transition: transform 120ms ease;
+}
+
+.json-node[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.json-node summary:hover,
+.json-leaf:hover {
+  background: #f3f6fa;
 }
 
 .json-children {
   display: grid;
-  gap: 4px;
-  margin-top: 4px;
-  margin-left: 8px;
+  gap: 0;
+  margin-left: 18px;
 }
 
 .json-leaf {
-  display: grid;
-  grid-template-columns: minmax(80px, 140px) minmax(0, 1fr);
-  gap: 8px;
-  align-items: start;
+  display: flex;
+  min-height: 24px;
+  align-items: baseline;
+  width: fit-content;
+  max-width: 100%;
+  border-radius: 4px;
+  padding: 2px 5px 2px 2px;
 }
 
-.json-leaf > .json-key,
-.json-leaf > .json-value {
-  min-width: 0;
-  overflow-wrap: anywhere;
+.json-leaf-spacer {
+  flex: 0 0 14px;
+  width: 14px;
 }
 
 .json-key {
-  color: #475467;
+  color: #8f2d91;
+  font-weight: 650;
+}
+
+.json-root-kind {
+  color: #667085;
+  font-weight: 700;
+}
+
+.json-punctuation {
+  margin: 0 6px 0 4px;
+  color: #89919f;
+  font-weight: 700;
 }
 
 .json-count {
   margin-left: 6px;
-  color: var(--muted);
-  font-size: 11px;
+  color: #7b8493;
+  font-weight: 650;
 }
 
 .json-value {
+  min-width: 0;
+  max-width: min(76ch, 100%);
   overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .json-scalar {
   overflow-wrap: anywhere;
+}
+
+.json-string {
+  color: #087d1d;
+  font-weight: 600;
+}
+
+.json-number {
+  color: #1d4ed8;
+  font-variant-numeric: tabular-nums;
+}
+
+.json-boolean {
+  color: #9a3412;
+  font-weight: 650;
+}
+
+.json-null {
+  color: #7b8493;
+  font-style: italic;
+}
+
+.json-link {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+.json-link:hover {
+  color: #056517;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .json-node summary::before {
+    transition: none;
+  }
 }
 
 .rich-value {

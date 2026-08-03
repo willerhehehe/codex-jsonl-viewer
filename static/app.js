@@ -1504,18 +1504,55 @@ function renderRelatedInspector(item) {
 
 function renderJsonTree(value, label, depth) {
   if (value === null || typeof value !== "object") {
-    return `<div class="json-leaf"><span class="json-key">${escapeHtml(label)}</span><span class="json-value">${renderRichValue(value)}</span></div>`;
+    return `
+      <div class="json-leaf">
+        <span class="json-leaf-spacer" aria-hidden="true"></span>
+        <span class="json-key">${escapeHtml(label)}</span>
+        <span class="json-punctuation" aria-hidden="true">:</span>
+        <span class="json-value">${renderJsonScalar(value)}</span>
+      </div>
+    `;
   }
   const entries = Array.isArray(value) ? value.map((child, index) => [String(index), child]) : Object.entries(value);
   const open = depth < 2 ? " open" : "";
+  const isArray = Array.isArray(value);
+  const isRoot = label === "record" || label === "value";
+  const labelMarkup = isRoot
+    ? `<span class="json-root-kind">${isArray ? "array" : "object"}</span>`
+    : `<span class="json-key">${escapeHtml(label)}</span><span class="json-punctuation" aria-hidden="true">:</span>`;
+  const count = isArray ? `[${entries.length}]` : `{${entries.length}}`;
   return `
     <details class="json-node"${open}>
-      <summary><span class="json-key">${escapeHtml(label)}</span><span class="json-count">${Array.isArray(value) ? `${entries.length} items` : `${entries.length} keys`}</span></summary>
+      <summary title="Click to expand or collapse. Ctrl/Command-click applies to every child node.">
+        ${labelMarkup}
+        <span class="json-count">${count}</span>
+      </summary>
       <div class="json-children">
         ${entries.map(([key, child]) => renderJsonTree(child, key, depth + 1)).join("")}
       </div>
     </details>
   `;
+}
+
+function renderJsonScalar(value) {
+  if (value === null) {
+    return `<span class="json-scalar json-null">null</span>`;
+  }
+  if (value === undefined) {
+    return `<span class="json-scalar json-null">undefined</span>`;
+  }
+  if (typeof value === "number") {
+    return `<span class="json-scalar json-number">${escapeHtml(String(value))}</span>`;
+  }
+  if (typeof value === "boolean") {
+    return `<span class="json-scalar json-boolean">${String(value)}</span>`;
+  }
+
+  const text = String(value);
+  if (/^https?:\/\/\S+$/i.test(text)) {
+    return `<a class="json-scalar json-string json-link" href="${escapeAttr(text)}" target="_blank" rel="noreferrer">${escapeHtml(text)}</a>`;
+  }
+  return `<span class="json-scalar json-string">${escapeHtml(text)}</span>`;
 }
 
 function eventFields(record) {
@@ -2414,6 +2451,7 @@ function toggleInspectorWide() {
 
 el.inspectorContent.addEventListener("click", (event) => {
   const treeAction = event.target.closest("[data-tree-action]");
+  const treeSummary = event.target.closest(".json-node > summary");
   const selectLine = event.target.closest("[data-select-line]");
   const selectTurn = event.target.closest("[data-select-turn]");
   const loadTurn = event.target.closest("[data-load-turn-events]");
@@ -2421,7 +2459,10 @@ el.inspectorContent.addEventListener("click", (event) => {
   const copyTurn = event.target.closest("[data-copy-turn]");
   const clearPhase = event.target.closest("[data-clear-turn-phase]");
   const inspectTurnLine = event.target.closest("[data-inspect-turn-line]");
-  if (treeAction) {
+  if (treeSummary && (event.ctrlKey || event.metaKey)) {
+    event.preventDefault();
+    toggleJsonTreeBranch(treeSummary.parentElement);
+  } else if (treeAction) {
     handleInspectorTreeAction(treeAction.dataset.treeAction);
   } else if (loadTurn) {
     const turn = state.turns.find((candidate) => candidate.id === loadTurn.dataset.loadTurnEvents);
@@ -2487,6 +2528,14 @@ function handleInspectorTreeAction(action) {
   const shouldOpen = action === "expand-all";
   for (const node of el.inspectorContent.querySelectorAll(".json-tree details")) {
     node.open = shouldOpen;
+  }
+}
+
+function toggleJsonTreeBranch(node) {
+  const shouldOpen = !node.open;
+  node.open = shouldOpen;
+  for (const child of node.querySelectorAll("details.json-node")) {
+    child.open = shouldOpen;
   }
 }
 
