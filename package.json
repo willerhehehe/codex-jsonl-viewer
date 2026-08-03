@@ -1,6 +1,6 @@
 {
   "name": "codex-jsonl-viewer",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Local browser UI for following and inspecting Codex and Claude Code session JSONL files.",
   "license": "MIT",
   "repository": {
