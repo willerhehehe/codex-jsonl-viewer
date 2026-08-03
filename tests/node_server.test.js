@@ -51,8 +51,30 @@ test("CLI defaults to the Codex sessions root and local URL port", () => {
   assert.equal(options.claudeRoot, "~/.claude/projects");
   assert.equal(options.host, "127.0.0.1");
   assert.equal(options.port, 8765);
-  assert.equal(options.open, false);
+  assert.equal(options.open, true);
   assert.equal(options.strictPort, false);
+  assert.equal(cli.parseArgs(["--no-open"]).open, false);
+  assert.match(cli.usage(), /--no-open\s+Do not open a browser automatically/);
+});
+
+test("CLI opens the default browser after the server starts", async () => {
+  const openedUrls = [];
+  const output = bufferedOutput();
+  const errorOutput = bufferedOutput();
+  const viewer = cli.runCli(["--port", "0"], output, errorOutput, {
+    openBrowser: (url) => openedUrls.push(url),
+  });
+
+  try {
+    await waitForListening(viewer);
+
+    assert.deepEqual(openedUrls, [`http://127.0.0.1:${viewer.address().port}`]);
+    assert.equal(errorOutput.text(), "");
+  } finally {
+    if (viewer.listening) {
+      await close(viewer);
+    }
+  }
 });
 
 test("CLI preserves runtime arguments when building global and npx restarts", () => {
@@ -161,7 +183,7 @@ test("CLI automatically falls back when the requested port is busy", async () =>
   let viewer;
 
   try {
-    viewer = cli.runCli(["--port", String(blockedPort)], output, errorOutput);
+    viewer = cli.runCli(["--port", String(blockedPort), "--no-open"], output, errorOutput);
     await waitForListening(viewer, { ignoreBusyPort: true });
 
     assert.notEqual(viewer.address().port, blockedPort);
@@ -185,7 +207,7 @@ test("CLI strict port reports a busy port instead of falling back", async () => 
   let viewer;
 
   try {
-    viewer = cli.runCli(["--port", String(blockedPort), "--strict-port"], output, errorOutput);
+    viewer = cli.runCli(["--port", String(blockedPort), "--strict-port", "--no-open"], output, errorOutput);
     await waitForError(viewer);
     process.exitCode = 0;
 
@@ -202,7 +224,7 @@ test("CLI strict port reports a busy port instead of falling back", async () => 
 test("CLI port zero uses an assigned port without a busy-port warning", async () => {
   const output = bufferedOutput();
   const errorOutput = bufferedOutput();
-  const viewer = cli.runCli(["--port", "0"], output, errorOutput);
+  const viewer = cli.runCli(["--port", "0", "--no-open"], output, errorOutput);
 
   try {
     await waitForListening(viewer);

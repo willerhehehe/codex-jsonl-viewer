@@ -10,7 +10,7 @@ function parseArgs(argv) {
     port: 8765,
     root: DEFAULT_ROOT,
     claudeRoot: DEFAULT_CLAUDE_ROOT,
-    open: false,
+    open: true,
     help: false,
     strictPort: false,
   };
@@ -53,7 +53,7 @@ function parseArgs(argv) {
   return options;
 }
 
-function runCli(argv = process.argv.slice(2), output = process.stdout, errorOutput = process.stderr) {
+function runCli(argv = process.argv.slice(2), output = process.stdout, errorOutput = process.stderr, dependencies = {}) {
   let options;
   try {
     options = parseArgs(argv);
@@ -67,6 +67,7 @@ function runCli(argv = process.argv.slice(2), output = process.stdout, errorOutp
     return 0;
   }
 
+  const browserOpener = dependencies.openBrowser || openBrowser;
   let server;
   const restartProcess = (update) => restartCli(server, options, update);
   server = createHttpServer({ ...options, restartProcess });
@@ -83,7 +84,10 @@ function runCli(argv = process.argv.slice(2), output = process.stdout, errorOutp
     output.write(`Claude root: ${resolveProjectsRoot(options.claudeRoot)}\n`);
     output.write(`Press Ctrl+C to stop.\n`);
     if (options.open) {
-      openBrowser(url);
+      browserOpener(url, (error) => {
+        errorOutput.write(`Could not open the default browser automatically: ${error.message}\n`);
+        errorOutput.write(`Open ${url} manually.\n`);
+      });
     }
   };
   const onError = (error) => {
@@ -111,7 +115,8 @@ function usage() {
     `  --host <host>   Host to bind. Defaults to 127.0.0.1\n` +
     `  --port <port>   Port to bind. Defaults to 8765\n` +
     `  --strict-port   Fail instead of using another port when the requested port is busy\n` +
-    `  --open          Open the viewer in your default browser\n` +
+    `  --open          Open the viewer in your default browser (default)\n` +
+    `  --no-open       Do not open a browser automatically\n` +
     `  -h, --help      Show this help\n`;
 }
 
@@ -131,14 +136,16 @@ function parsePort(value) {
   return port;
 }
 
-function openBrowser(url) {
+function openBrowser(url, onError = () => {}) {
   const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
   const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
   const child = spawn(command, args, {
     detached: true,
     stdio: "ignore",
   });
+  child.once("error", onError);
   child.unref();
+  return child;
 }
 
 function serializeCliArgs(options) {

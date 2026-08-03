@@ -27,7 +27,8 @@ Use the switch in the top-left corner to move between the Codex and Claude viewe
 npx codex-jsonl-viewer
 ```
 
-The command prints the local URL to open:
+The command starts the local server and automatically opens the viewer in your
+default browser. It also prints the local URL:
 
 ```text
 http://127.0.0.1:8765
@@ -64,7 +65,7 @@ Other options:
 npx codex-jsonl-viewer --port 9000
 npx codex-jsonl-viewer --host 0.0.0.0
 npx codex-jsonl-viewer --strict-port
-npx codex-jsonl-viewer --open
+npx codex-jsonl-viewer --no-open
 ```
 
 All session files are read locally and treated as read-only. The viewer does not upload session data.
